@@ -1,5 +1,5 @@
 <div align="center">
-  <img alt="Rust 2021" src="assets/logo.svg">
+  <img alt="Swift Logo" src="assets/logo.svg" width="150">
   <h1>Swift Launcher</h1>
   <p>Modern, fast Minecraft launcher built with Rust and Iced.</p>
   <p>

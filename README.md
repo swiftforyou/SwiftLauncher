@@ -19,13 +19,35 @@
 ## Overview
 Swift Launcher is a desktop Minecraft launcher focused on clean UX, fast startup, and reliable downloads. It manages instances, supports modern mod loaders, and provides built-in authentication flows.
 
+## Philosophy
+- Fast, reliable downloads with strong progress tracking
+- Clear, minimal UI with easy-to-reach actions
+- Instance isolation with explicit per-instance settings
+- Observable launches with live logs and crash report access
+
 ## Features
-- <img alt="Instances" src="https://cdn.simpleicons.org/minecraft/6B7280" height="14"> Instance management with import/export and per-instance settings
-- <img alt="Loaders" src="https://cdn.simpleicons.org/modrinth/6B7280" height="14"> Vanilla, Fabric, and Quilt loader support
-- <img alt="Mods" src="https://cdn.simpleicons.org/curseforge/6B7280" height="14"> Mod management with Modrinth search/install and local jar import
-- <img alt="Auth" src="https://cdn.simpleicons.org/microsoft/6B7280" height="14"> Microsoft, Ely.by, and LittleSkin authentication
-- <img alt="Java" src="https://cdn.simpleicons.org/openjdk/6B7280" height="14"> Managed Java downloads (8/17/21) and custom Java path support
-- <img alt="Logs" src="https://cdn.simpleicons.org/terminal/6B7280" height="14"> Launch logs and crash report access
+- <img alt="Instances" src="https://api.iconify.design/simple-icons:minecraft.svg?color=%236B7280" height="14"> Instance management with import/export and per-instance settings
+- <img alt="Loaders" src="https://api.iconify.design/simple-icons:modrinth.svg?color=%236B7280" height="14"> Vanilla, Fabric, and Quilt loader support
+- <img alt="Mods" src="https://api.iconify.design/simple-icons:curseforge.svg?color=%236B7280" height="14"> Mod management with Modrinth search/install and local jar import
+- <img alt="Auth" src="https://api.iconify.design/simple-icons:microsoft.svg?color=%236B7280" height="14"> Microsoft, Ely.by, and LittleSkin authentication
+- <img alt="Java" src="https://api.iconify.design/simple-icons:openjdk.svg?color=%236B7280" height="14"> Managed Java downloads (8/17/21) and custom Java path support
+- <img alt="Logs" src="https://api.iconify.design/simple-icons:logstash.svg?color=%236B7280" height="14"> Launch logs and crash report access
+
+## Mod Loader Support
+- Vanilla
+- Fabric
+- Quilt
+- Forge/NeoForge: not wired yet
+
+## Authentication
+- Microsoft device flow
+- Ely.by
+- LittleSkin
+
+## Logs & Diagnostics
+- Live launch log stream in the instance detail view
+- One-click log copy for sharing or debugging
+- Crash report folder access
 
 ## Getting Started
 ### Requirements
@@ -47,6 +69,12 @@ cargo run
 cargo test
 ```
 
+## Configuration
+Logging uses `tracing_subscriber` and honors `RUST_LOG`. Default filter is:
+```
+swift_launcher=info,warn
+```
+
 ## Project Layout
 - `src/main.rs`: application entrypoint
 - `src/app.rs`: app state + update loop
@@ -55,11 +83,8 @@ cargo test
 - `src/download/`: downloader pipeline
 - `src/theme.rs`: shared styling
 
-## Logging
-Logging uses `tracing_subscriber` and honors `RUST_LOG`. Default filter is:
-```
-swift_launcher=info,warn
-```
-
 ## Notes
 - Forge/NeoForge installers are not wired yet.
+
+## Contributing
+Issues and PRs are welcome. If you are making UI changes, include screenshots where possible.

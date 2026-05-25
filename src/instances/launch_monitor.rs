@@ -23,16 +23,18 @@ pub struct LaunchMonitor {
 
 impl Default for LaunchMonitor {
     fn default() -> Self {
-        Self::new()
+        Self {
+            game_ready: false,
+            crash_detected: false,
+            ready_at: None,
+            started_at: std::time::Instant::now(),
+        }
     }
 }
 
 impl LaunchMonitor {
     pub fn new() -> Self {
-        Self {
-            started_at: std::time::Instant::now(),
-            ..Default::default()
-        }
+        Self::default()
     }
 
     pub fn on_line(&mut self, line: &str) -> Option<LaunchEvent> {

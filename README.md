@@ -1,4 +1,5 @@
 <div align="center">
+  <img alt="Rust 2021" src="assets/preview.png">
   <h1>Swift Launcher</h1>
   <p>Modern, fast Minecraft launcher built with Rust and Iced.</p>
   <p>

@@ -7,6 +7,38 @@ use crate::download::{download_jobs_checked, DownloadJob};
 use crate::error::AppError;
 use crate::instances::LoaderKind;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ModrinthKind {
+    Mods,
+    Modpacks,
+    ResourcePacks,
+    Shaders,
+}
+
+impl ModrinthKind {
+    pub const ALL: [Self; 4] = [Self::Mods, Self::Modpacks, Self::ResourcePacks, Self::Shaders];
+
+    fn project_type(self) -> &'static str {
+        match self {
+            Self::Mods => "mod",
+            Self::Modpacks => "modpack",
+            Self::ResourcePacks => "resourcepack",
+            Self::Shaders => "shader",
+        }
+    }
+}
+
+impl std::fmt::Display for ModrinthKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mods => f.write_str("Mods"),
+            Self::Modpacks => f.write_str("Modpacks"),
+            Self::ResourcePacks => f.write_str("Resource Packs"),
+            Self::Shaders => f.write_str("Shaders"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledMod {
     pub id: String,
@@ -18,9 +50,24 @@ pub struct InstalledMod {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModrinthProject {
     pub project_id: String,
+    pub slug: String,
     pub title: String,
     pub description: String,
     pub downloads: u64,
+    pub icon: Option<Vec<u8>>,
+    pub kind: ModrinthKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModrinthProjectDetail {
+    pub project_id: String,
+    pub title: String,
+    pub description: String,
+    pub body: String,
+    pub downloads: u64,
+    pub icon: Option<Vec<u8>>,
+    pub gallery: Vec<Vec<u8>>,
+    pub kind: ModrinthKind,
 }
 
 pub async fn list_mods(instance_path: &Path) -> Result<Vec<InstalledMod>, AppError> {
@@ -101,36 +148,86 @@ pub async fn import_mod(instance_path: PathBuf, source: PathBuf) -> Result<Vec<I
     list_mods(&instance_path).await
 }
 
-pub async fn search_modrinth(query: String, minecraft_version: String, loader: LoaderKind) -> Result<Vec<ModrinthProject>, AppError> {
+pub async fn search_modrinth(
+    query: String,
+    minecraft_version: String,
+    loader: LoaderKind,
+    kind: ModrinthKind,
+) -> Result<Vec<ModrinthProject>, AppError> {
     let query = query.trim();
     if query.is_empty() {
         return Ok(Vec::new());
     }
-    let loader = modrinth_loader(loader)?;
-    let facets = format!(r#"[["project_type:mod"],["versions:{minecraft_version}"],["categories:{loader}"]]"#);
+    let loader = modrinth_loader(loader).ok();
+    let facets = match (kind, loader) {
+        (ModrinthKind::Mods | ModrinthKind::Modpacks, Some(loader)) => {
+            format!(r#"[["project_type:{}"],["versions:{minecraft_version}"],["categories:{loader}"]]"#, kind.project_type())
+        }
+        _ => format!(r#"[["project_type:{}"],["versions:{minecraft_version}"]]"#, kind.project_type()),
+    };
     let base = modrinth_base_url();
     let url = format!(
-        "{base}/v2/search?query={}&limit=12&index=relevance&facets={}",
+        "{base}/v2/search?query={}&limit=20&index=downloads&facets={}",
         url_encode(query),
         url_encode(&facets),
     );
-    let response = modrinth_client()
+    let client = modrinth_client();
+    let response = client
         .get(url)
         .send()
         .await?
         .error_for_status()?
         .json::<ModrinthSearchResponse>()
         .await?;
-    Ok(response
-        .hits
-        .into_iter()
-        .map(|hit| ModrinthProject {
+    let mut projects = Vec::new();
+    for hit in response.hits {
+        let icon = match hit.icon_url {
+            Some(url) => fetch_image_bytes(&client, &url).await.ok(),
+            None => None,
+        };
+        projects.push(ModrinthProject {
             project_id: hit.project_id,
+            slug: hit.slug,
             title: hit.title,
             description: hit.description,
             downloads: hit.downloads,
-        })
-        .collect())
+            icon,
+            kind,
+        });
+    }
+    Ok(projects)
+}
+
+pub async fn modrinth_project_detail(project_id: String, kind: ModrinthKind) -> Result<ModrinthProjectDetail, AppError> {
+    let client = modrinth_client();
+    let base = modrinth_base_url();
+    let project = client
+        .get(format!("{base}/v2/project/{}", url_encode(&project_id)))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<ModrinthProjectResponse>()
+        .await?;
+    let icon = match &project.icon_url {
+        Some(url) => fetch_image_bytes(&client, url).await.ok(),
+        None => None,
+    };
+    let mut gallery = Vec::new();
+    for image in project.gallery.iter().take(4) {
+        if let Ok(bytes) = fetch_image_bytes(&client, &image.url).await {
+            gallery.push(bytes);
+        }
+    }
+    Ok(ModrinthProjectDetail {
+        project_id: project.id,
+        title: project.title,
+        description: project.description,
+        body: project.body,
+        downloads: project.downloads,
+        icon,
+        gallery,
+        kind,
+    })
 }
 
 pub async fn install_modrinth_project(
@@ -226,9 +323,28 @@ struct ModrinthSearchResponse {
 #[derive(Debug, Deserialize)]
 struct ModrinthHit {
     project_id: String,
+    slug: String,
     title: String,
     description: String,
     downloads: u64,
+    icon_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModrinthProjectResponse {
+    id: String,
+    title: String,
+    description: String,
+    body: String,
+    downloads: u64,
+    icon_url: Option<String>,
+    #[serde(default)]
+    gallery: Vec<ModrinthGalleryImage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModrinthGalleryImage {
+    url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -267,6 +383,17 @@ fn modrinth_loader(loader: LoaderKind) -> Result<&'static str, AppError> {
         LoaderKind::NeoForge => Ok("neoforge"),
         LoaderKind::Vanilla => Err(AppError::Instance("Modrinth mod install needs a mod loader instance".into())),
     }
+}
+
+async fn fetch_image_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, AppError> {
+    Ok(client
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?
+        .to_vec())
 }
 
 fn modrinth_client() -> reqwest::Client {

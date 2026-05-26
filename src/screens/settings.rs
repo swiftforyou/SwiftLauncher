@@ -117,7 +117,7 @@ fn accounts_section<'a>(accounts: &'a [Session], active: Option<&'a Session>) ->
         );
     }
 
-    list.push(button("Add Account").on_press(Message::SettingsClosed).style(theme::primary_button))
+    list.push(button("Add Account").on_press(Message::AddAccount).style(theme::primary_button))
         .into()
 }
 

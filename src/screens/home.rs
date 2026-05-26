@@ -86,7 +86,7 @@ pub fn view<'a>(
 
     let action = row![
         icon_button(icons::ADD, 18.0, Message::NewInstance, theme::primary_button),
-        icon_button(icons::FOLDER, 18.0, Message::ImportInstance, theme::secondary_button),
+        icon_button(icons::IMPORT, 18.0, Message::ImportInstance, theme::secondary_button),
         Space::with_width(Length::Fill),
         styled_pick_list([SortMode::Name, SortMode::LastPlayed, SortMode::Version], Some(sort), Message::SortChanged),
         icon_button(
@@ -329,10 +329,20 @@ fn card(instance: &Instance, list_view: bool, _columns: usize) -> Element<'_, Me
                 .spacing(2)
                 .width(Length::FillPortion(3)),
                 play_button(instance),
-                icon_button(icons::MODS, 18.0, Message::SelectInstance(instance.id.clone()), theme::secondary_button),
-                icon_button(icons::SETTINGS, 18.0, Message::SelectInstance(instance.id.clone()), theme::secondary_button),
                 icon_button(
-                    icons::FOLDER,
+                    icons::MODS,
+                    18.0,
+                    Message::OpenInstanceTab(instance.id.clone(), InstanceTab::Mods),
+                    theme::secondary_button,
+                ),
+                icon_button(
+                    icons::SETTINGS,
+                    18.0,
+                    Message::OpenInstanceTab(instance.id.clone(), InstanceTab::Settings),
+                    theme::secondary_button,
+                ),
+                icon_button(
+                    icons::LOGS,
                     18.0,
                     Message::OpenInstanceTab(instance.id.clone(), InstanceTab::Logs),
                     theme::secondary_button,
@@ -367,10 +377,20 @@ fn card(instance: &Instance, list_view: bool, _columns: usize) -> Element<'_, Me
                 .align_y(Alignment::Center),
                 row![
                     play_button(instance),
-                    icon_button(icons::MODS, 18.0, Message::SelectInstance(instance.id.clone()), theme::secondary_button),
-                    icon_button(icons::SETTINGS, 18.0, Message::SelectInstance(instance.id.clone()), theme::secondary_button),
                     icon_button(
-                        icons::FOLDER,
+                        icons::MODS,
+                        18.0,
+                        Message::OpenInstanceTab(instance.id.clone(), InstanceTab::Mods),
+                        theme::secondary_button,
+                    ),
+                    icon_button(
+                        icons::SETTINGS,
+                        18.0,
+                        Message::OpenInstanceTab(instance.id.clone(), InstanceTab::Settings),
+                        theme::secondary_button,
+                    ),
+                    icon_button(
+                        icons::LOGS,
                         18.0,
                         Message::OpenInstanceTab(instance.id.clone(), InstanceTab::Logs),
                         theme::secondary_button,

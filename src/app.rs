@@ -3,13 +3,14 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use iced::widget::scrollable::{self, Id as ScrollableId, RelativeOffset};
 use iced::{stream, time, Element, Subscription, Task};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::auth::{AuthProvider, Session};
 use crate::download::DownloadControl;
 use crate::error::AppError;
-use crate::instances::mods::{InstalledMod, ModrinthProject};
+use crate::instances::mods::{InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail};
 use crate::instances::{Instance, InstanceManager, InstanceRunState, InstanceTab, LoaderKind, SortMode};
 use crate::messages::Message;
 use crate::state::{AppState, StartupData};
@@ -63,7 +64,10 @@ pub struct SwiftLauncher {
     mods_search: String,
     mod_import_path: String,
     modrinth_query: String,
+    modrinth_kind: ModrinthKind,
     modrinth_results: Vec<ModrinthProject>,
+    modrinth_detail: Option<ModrinthProjectDetail>,
+    modrinth_detail_busy: bool,
     modrinth_busy: bool,
     installed_mods: Vec<InstalledMod>,
     mods_loading: bool,
@@ -76,6 +80,8 @@ pub struct SwiftLauncher {
     window_width: f32,
     avatar_cache: HashMap<String, PathBuf>,
     launch_status_by_instance: HashMap<String, String>,
+    last_auto_scrolled_log_len: usize,
+    adding_account: bool,
 }
 
 #[derive(Clone)]
@@ -135,7 +141,10 @@ impl SwiftLauncher {
             mods_search: String::new(),
             mod_import_path: String::new(),
             modrinth_query: String::new(),
+            modrinth_kind: ModrinthKind::Mods,
             modrinth_results: Vec::new(),
+            modrinth_detail: None,
+            modrinth_detail_busy: false,
             modrinth_busy: false,
             installed_mods: Vec::new(),
             mods_loading: false,
@@ -148,6 +157,8 @@ impl SwiftLauncher {
             window_width: 1160.0,
             avatar_cache: HashMap::new(),
             launch_status_by_instance: HashMap::new(),
+            last_auto_scrolled_log_len: 0,
+            adding_account: false,
         };
         (app, Task::perform(startup(), Message::StartupFinished))
     }
@@ -205,6 +216,16 @@ impl SwiftLauncher {
                 if matches!(self.state, AppState::Loading) {
                     let wave = (now.elapsed().as_millis() % 1000) as f32 / 1000.0;
                     self.loading_progress = (self.loading_progress + 0.01).max(wave).min(0.94);
+                }
+                if self.selected_tab == InstanceTab::Logs
+                    && self.selected_instance.is_some()
+                    && self.last_auto_scrolled_log_len != self.launch_log.len()
+                {
+                    self.last_auto_scrolled_log_len = self.launch_log.len();
+                    return scrollable::snap_to(
+                        ScrollableId::new("launch-log-scroll"),
+                        RelativeOffset::END,
+                    );
                 }
                 Task::none()
             }
@@ -844,6 +865,12 @@ impl SwiftLauncher {
                 self.modrinth_query = value;
                 Task::none()
             }
+            Message::ModrinthKindSelected(kind) => {
+                self.modrinth_kind = kind;
+                self.modrinth_results.clear();
+                self.modrinth_detail = None;
+                Task::none()
+            }
             Message::SearchModrinth => {
                 let Some(instance) = self.selected_instance().cloned() else {
                     self.error_banner = Some("select an instance first".into());
@@ -855,6 +882,7 @@ impl SwiftLauncher {
                         self.modrinth_query.clone(),
                         instance.minecraft_version,
                         instance.loader,
+                        self.modrinth_kind,
                     ),
                     Message::ModrinthSearchFinished,
                 )
@@ -865,6 +893,27 @@ impl SwiftLauncher {
                     Ok(results) => self.modrinth_results = results,
                     Err(error) => self.error_banner = Some(error.to_string()),
                 }
+                Task::none()
+            }
+            Message::OpenModrinthProject(project_id) => {
+                self.modrinth_detail = None;
+                self.modrinth_detail_busy = true;
+                let kind = self.modrinth_kind;
+                Task::perform(
+                    crate::instances::mods::modrinth_project_detail(project_id, kind),
+                    Message::ModrinthProjectDetailLoaded,
+                )
+            }
+            Message::ModrinthProjectDetailLoaded(result) => {
+                self.modrinth_detail_busy = false;
+                match result {
+                    Ok(detail) => self.modrinth_detail = Some(detail),
+                    Err(error) => self.error_banner = Some(error.to_string()),
+                }
+                Task::none()
+            }
+            Message::CloseModrinthProject => {
+                self.modrinth_detail = None;
                 Task::none()
             }
             Message::InstallModrinthProject(project_id) => {
@@ -991,6 +1040,30 @@ impl SwiftLauncher {
                     Some(session) => Task::perform(async move { crate::auth::invalidate(&session).await }, |_| Message::Noop),
                     None => Task::none(),
                 }
+            }
+            Message::AddAccount => {
+                self.settings_open = false;
+                self.account_menu_open = false;
+                self.adding_account = true;
+                self.login_provider = AuthProvider::Microsoft;
+                self.username.clear();
+                self.password.clear();
+                self.totp.clear();
+                self.device_flow = None;
+                self.error_banner = None;
+                self.state = AppState::Login;
+                Task::none()
+            }
+            Message::CancelAddAccount => {
+                self.adding_account = false;
+                self.auth_busy = false;
+                self.device_flow = None;
+                self.error_banner = None;
+                if self.active_session.is_some() {
+                    self.state = AppState::Home;
+                    self.settings_open = true;
+                }
+                Task::none()
             }
             Message::SettingsOpened => {
                 self.settings_open = true;
@@ -1141,6 +1214,7 @@ impl SwiftLauncher {
                 self.auth_busy,
                 self.error_banner.as_deref(),
                 self.device_flow.as_ref().map(|(code, url)| (code.as_str(), url.as_str())),
+                self.adding_account,
             ),
             AppState::Home => crate::screens::home::view(
                 self.active_session.as_ref(),
@@ -1194,7 +1268,10 @@ impl SwiftLauncher {
                     &self.export_path,
                     self.export_busy,
                     &self.modrinth_query,
+                    self.modrinth_kind,
                     &self.modrinth_results,
+                    self.modrinth_detail.as_ref(),
+                    self.modrinth_detail_busy,
                     self.modrinth_busy,
                     &self.installed_mods,
                     self.mods_loading,
@@ -1252,6 +1329,8 @@ impl SwiftLauncher {
             self.accounts.push(session);
         }
         self.state = AppState::Home;
+        self.adding_account = false;
+        self.settings_open = false;
     }
 
     fn cache_avatar_task(session: Session) -> Task<Message> {

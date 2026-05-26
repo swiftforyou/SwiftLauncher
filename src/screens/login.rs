@@ -14,6 +14,7 @@ pub fn view<'a>(
     busy: bool,
     banner: Option<&'a str>,
     device: Option<(&'a str, &'a str)>,
+    show_back: bool,
 ) -> Element<'a, Message> {
     let logo = svg(svg::Handle::from_path("assets/logo.svg")).width(72).height(72);
     let mut form = column![
@@ -26,6 +27,15 @@ pub fn view<'a>(
     ]
     .spacing(14)
     .align_x(Alignment::Center);
+
+    if show_back {
+        form = form.push(
+            button("Back")
+                .on_press(Message::CancelAddAccount)
+                .style(theme::secondary_button)
+                .width(Length::Fill),
+        );
+    }
 
     if provider != AuthProvider::Microsoft {
         form = form

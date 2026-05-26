@@ -4,7 +4,7 @@ use std::time::Instant;
 use crate::auth::{AuthProvider, Session};
 use crate::download::{DownloadEvent, DownloadProgress};
 use crate::error::AppError;
-use crate::instances::mods::{InstalledMod, ModrinthProject};
+use crate::instances::mods::{InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail};
 use crate::instances::{Instance, InstanceTab, LoaderKind, SortMode};
 use crate::state::StartupData;
 
@@ -93,8 +93,12 @@ pub enum Message {
     ImportModSubmit,
     ModImported(Result<Vec<InstalledMod>, AppError>),
     ModrinthSearchChanged(String),
+    ModrinthKindSelected(ModrinthKind),
     SearchModrinth,
     ModrinthSearchFinished(Result<Vec<ModrinthProject>, AppError>),
+    OpenModrinthProject(String),
+    ModrinthProjectDetailLoaded(Result<ModrinthProjectDetail, AppError>),
+    CloseModrinthProject,
     InstallModrinthProject(String),
     ModrinthProjectInstalled(Result<Vec<InstalledMod>, AppError>),
     AuthProviderSelected(AuthProvider),
@@ -111,6 +115,8 @@ pub enum Message {
     AccountMenuToggled,
     AccountSelected(String),
     SignOut(String),
+    AddAccount,
+    CancelAddAccount,
     SettingsOpened,
     SettingsClosed,
     ThemeModeChanged(crate::theme::ThemeMode),

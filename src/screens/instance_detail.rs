@@ -1,8 +1,8 @@
-use iced::widget::{button, checkbox, column, container, row, scrollable, slider, text, text_input, Space};
+use iced::widget::{button, checkbox, column, container, image, row, scrollable, slider, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 
 use crate::icons::{self, icon_button, svg_icon};
-use crate::instances::mods::{InstalledMod, ModrinthProject};
+use crate::instances::mods::{InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail};
 use crate::instances::{Instance, InstanceRunState, InstanceTab};
 use crate::messages::Message;
 use crate::theme;
@@ -15,7 +15,10 @@ pub fn view<'a>(
     export_path: &'a str,
     export_busy: bool,
     modrinth_query: &'a str,
+    modrinth_kind: ModrinthKind,
     modrinth_results: &'a [ModrinthProject],
+    modrinth_detail: Option<&'a ModrinthProjectDetail>,
+    modrinth_detail_busy: bool,
     modrinth_busy: bool,
     installed_mods: &'a [InstalledMod],
     mods_loading: bool,
@@ -56,7 +59,10 @@ pub fn view<'a>(
             mods_search,
             mod_import_path,
             modrinth_query,
+            modrinth_kind,
             modrinth_results,
+            modrinth_detail,
+            modrinth_detail_busy,
             modrinth_busy,
             installed_mods,
             mods_loading,
@@ -154,11 +160,20 @@ fn mods<'a>(
     mods_search: &'a str,
     mod_import_path: &'a str,
     modrinth_query: &'a str,
+    modrinth_kind: ModrinthKind,
     modrinth_results: &'a [ModrinthProject],
+    modrinth_detail: Option<&'a ModrinthProjectDetail>,
+    modrinth_detail_busy: bool,
     modrinth_busy: bool,
     installed_mods: &'a [InstalledMod],
     loading: bool,
 ) -> Element<'a, Message> {
+    if let Some(detail) = modrinth_detail {
+        return modrinth_detail_view(detail);
+    }
+    if modrinth_detail_busy {
+        return loading_row("Loading project...").into();
+    }
     let search = mods_search.to_lowercase();
     let filtered = installed_mods
         .iter()
@@ -177,6 +192,7 @@ fn mods<'a>(
     }
 
     column![
+        modrinth_kind_selector(modrinth_kind),
         row![
             text_input("Search Modrinth", modrinth_query)
                 .on_input(Message::ModrinthSearchChanged)
@@ -211,6 +227,20 @@ fn mods<'a>(
     .into()
 }
 
+fn modrinth_kind_selector(selected: ModrinthKind) -> Element<'static, Message> {
+    let mut line = row![].spacing(8);
+    for kind in ModrinthKind::ALL {
+        let style = if kind == selected { theme::primary_button } else { theme::secondary_button };
+        line = line.push(
+            button(text(kind.to_string()).size(12))
+                .on_press(Message::ModrinthKindSelected(kind))
+                .style(style)
+                .padding([8, 10]),
+        );
+    }
+    line.into()
+}
+
 fn loading_row(message: &str) -> Element<'_, Message> {
     container(
         row![
@@ -232,18 +262,23 @@ fn modrinth_results_view(results: &[ModrinthProject], busy: bool) -> Element<'_,
     } else if results.is_empty() {
         list = list.push(text("No results").size(13));
     } else {
-        for item in results.iter().take(5) {
+        for item in results.iter().take(8) {
             list = list.push(
                 container(
                     row![
+                        project_icon(item.icon.as_ref(), 42.0),
                         column![
                             text(&item.title).size(14),
-                            text(format!("{} downloads • {}", item.downloads, item.description)).size(11),
+                            row![
+                                badge_text(format_downloads(item.downloads)),
+                                text(&item.description).size(11),
+                            ]
+                            .spacing(6),
                         ]
                         .spacing(2),
                         Space::with_width(Length::Fill),
-                        button("Install")
-                            .on_press(Message::InstallModrinthProject(item.project_id.clone()))
+                        button("Open")
+                            .on_press(Message::OpenModrinthProject(item.project_id.clone()))
                             .style(theme::secondary_button),
                     ]
                     .spacing(10)
@@ -255,6 +290,102 @@ fn modrinth_results_view(results: &[ModrinthProject], busy: bool) -> Element<'_,
         }
     }
     scrollable(list).height(Length::Fixed(150.0)).into()
+}
+
+fn modrinth_detail_view(detail: &ModrinthProjectDetail) -> Element<'_, Message> {
+    let mut body = column![
+        row![
+            project_icon(detail.icon.as_ref(), 58.0),
+            column![
+                text(&detail.title).size(20),
+                row![badge_text(detail.kind.to_string()), badge_text(format_downloads(detail.downloads))].spacing(6),
+                text(&detail.description).size(12),
+            ]
+            .spacing(5),
+            Space::with_width(Length::Fill),
+            button("Back").on_press(Message::CloseModrinthProject).style(theme::secondary_button),
+            if detail.kind == ModrinthKind::Mods {
+                button("Install").on_press(Message::InstallModrinthProject(detail.project_id.clone())).style(theme::primary_button)
+            } else {
+                button("Install").style(theme::secondary_button)
+            },
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
+    ]
+    .spacing(12);
+
+    if !detail.gallery.is_empty() {
+        let mut gallery = row![].spacing(8);
+        for bytes in &detail.gallery {
+            gallery = gallery.push(
+                image(image::Handle::from_bytes(bytes.clone()))
+                    .width(Length::Fixed(150.0))
+                    .height(Length::Fixed(90.0))
+                    .content_fit(iced::ContentFit::Cover),
+            );
+        }
+        body = body.push(gallery);
+    }
+
+    body = body.push(markdownish(&detail.body));
+    scrollable(body).height(Length::Fill).into()
+}
+
+fn markdownish(markdown: &str) -> Element<'_, Message> {
+    let mut col = column![].spacing(7);
+    for raw in markdown.lines().take(260) {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(text) = line.strip_prefix("# ") {
+            col = col.push(text_widget(text, 20));
+        } else if let Some(text) = line.strip_prefix("## ") {
+            col = col.push(text_widget(text, 17));
+        } else if let Some(text) = line.strip_prefix("### ") {
+            col = col.push(text_widget(text, 15));
+        } else if let Some(text) = line.strip_prefix("- ") {
+            col = col.push(text_widget(format!("• {text}"), 12));
+        } else if line.starts_with("![") {
+            col = col.push(text_widget("[image in gallery]", 11));
+        } else {
+            col = col.push(text_widget(line.replace("**", ""), 12));
+        }
+    }
+    col.into()
+}
+
+fn text_widget(content: impl Into<String>, size: u16) -> Element<'static, Message> {
+    text(content.into()).size(size).into()
+}
+
+fn project_icon(icon: Option<&Vec<u8>>, size: f32) -> Element<'_, Message> {
+    match icon {
+        Some(bytes) => image(image::Handle::from_bytes(bytes.clone()))
+            .width(Length::Fixed(size))
+            .height(Length::Fixed(size))
+            .content_fit(iced::ContentFit::Cover)
+            .into(),
+        None => svg_icon(icons::MODS, size * 0.6),
+    }
+}
+
+fn badge_text<'a>(label: impl Into<String>) -> Element<'a, Message> {
+    container(text(label.into()).size(11))
+        .padding([3, 7])
+        .style(theme::badge)
+        .into()
+}
+
+fn format_downloads(downloads: u64) -> String {
+    if downloads >= 1_000_000 {
+        format!("{:.1}M", downloads as f64 / 1_000_000.0)
+    } else if downloads >= 1_000 {
+        format!("{:.1}K", downloads as f64 / 1_000.0)
+    } else {
+        downloads.to_string()
+    }
 }
 
 fn mod_row(item: &InstalledMod) -> Element<'_, Message> {
@@ -288,7 +419,7 @@ fn files<'a>(instance: &'a Instance, export_path: &'a str, export_busy: bool) ->
         text(instance.path.display().to_string()).size(12),
         row![
             icon_button(icons::FOLDER, 18.0, Message::OpenInstanceFiles(instance.id.clone()), theme::secondary_button),
-            button("Logs").on_press(Message::OpenInstanceLogs(instance.id.clone())).style(theme::secondary_button),
+            icon_button(icons::LOGS, 18.0, Message::OpenInstanceLogs(instance.id.clone()), theme::secondary_button),
             button("Crash Reports")
                 .on_press(Message::OpenInstanceCrashReports(instance.id.clone()))
                 .style(theme::secondary_button),
@@ -354,7 +485,10 @@ fn logs<'a>(launch_log: &'a [String], launch_status: Option<&str>) -> Element<'a
                     .width(Length::Fill),
             );
         }
-        scrollable(col).height(Length::Fill).into()
+        scrollable(col)
+            .id(iced::widget::scrollable::Id::new("launch-log-scroll"))
+            .height(Length::Fill)
+            .into()
     };
 
     column![

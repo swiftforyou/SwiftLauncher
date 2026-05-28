@@ -31,7 +31,9 @@ pub async fn authenticate_device_stub() -> Result<Session, AppError> {
     authenticate_device(None).await
 }
 
-pub async fn authenticate_device(device_tx: Option<mpsc::UnboundedSender<(String, String)>>) -> Result<Session, AppError> {
+pub async fn authenticate_device(
+    device_tx: Option<mpsc::UnboundedSender<(String, String)>>,
+) -> Result<Session, AppError> {
     let client_id = microsoft_client_id()?;
     let mut auth = MicrosoftAuth::new(client_id);
     auth.set_timeout(Duration::from_secs(300));
@@ -42,7 +44,7 @@ pub async fn authenticate_device(device_tx: Option<mpsc::UnboundedSender<(String
         });
     }
 
-    let profile = auth.authenticate().await.map_err(|error| AppError::Auth(error.to_string()))?;
+    let profile = auth.authenticate().await.map_err(map_microsoft_error)?;
     session_from_profile(profile)
 }
 
@@ -57,7 +59,7 @@ pub async fn refresh_session(session: &Session) -> Result<Session, AppError> {
     let profile = auth
         .authenticate_with_refresh_token(&secret)
         .await
-        .map_err(|error| AppError::Auth(error.to_string()))?;
+        .map_err(map_microsoft_error)?;
     session_from_profile(profile)
 }
 
@@ -74,15 +76,24 @@ pub async fn offline_dev_session() -> Session {
 }
 
 fn microsoft_client_id() -> Result<String, AppError> {
+    const DEFAULT_CLIENT_ID: &str = "328faca9-e866-47dc-bf41-de106cd7f1a5";
     std::env::var("SWIFT_LAUNCHER_MS_CLIENT_ID")
         .map(|value| value.trim().to_string())
         .ok()
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            AppError::Auth(
-                "Microsoft login requires SWIFT_LAUNCHER_MS_CLIENT_ID. Create an Azure app registration, enable public client flows, then launch Swift Launcher with that env var.".into(),
-            )
-        })
+        .or_else(|| Some(DEFAULT_CLIENT_ID.to_string()))
+        .ok_or_else(|| AppError::Auth("Microsoft client id missing".into()))
+}
+
+fn map_microsoft_error(error: impl std::fmt::Display) -> AppError {
+    let message = error.to_string();
+    if message.contains("AADSTS700016") || message.contains("unauthorized_client") {
+        AppError::Auth(
+            "Microsoft rejected the client id. Use the Azure Application (client) ID, not object/tenant ID, and set Supported account types to personal Microsoft accounts or multitenant + personal accounts. Then enable public client/native flows.".into(),
+        )
+    } else {
+        AppError::Auth(message)
+    }
 }
 
 fn session_from_profile(profile: lighty_auth::UserProfile) -> Result<Session, AppError> {
@@ -90,9 +101,13 @@ fn session_from_profile(profile: lighty_auth::UserProfile) -> Result<Session, Ap
         .access_token
         .as_ref()
         .map(|token| token.expose_secret().to_string())
-        .ok_or_else(|| AppError::Auth("Microsoft profile did not include an access token".into()))?;
+        .ok_or_else(|| {
+            AppError::Auth("Microsoft profile did not include an access token".into())
+        })?;
     let refresh_token = match &profile.provider {
-        LightyAuthProvider::Microsoft { refresh_token, .. } => refresh_token.as_ref().map(|token| token.expose_secret().to_string()),
+        LightyAuthProvider::Microsoft { refresh_token, .. } => refresh_token
+            .as_ref()
+            .map(|token| token.expose_secret().to_string()),
         _ => None,
     };
 

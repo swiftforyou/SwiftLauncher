@@ -30,19 +30,27 @@ pub async fn ensure_disk_space(path: &Path, required: u64) -> Result<(), AppErro
 
 pub async fn open_path(path: PathBuf) -> Result<String, AppError> {
     if tokio::fs::metadata(&path).await.is_err() {
-        return Err(AppError::Process(format!("path does not exist: {}", path.display())));
+        return Err(AppError::Process(format!(
+            "path does not exist: {}",
+            path.display()
+        )));
     }
     run_open_command(path.to_string_lossy().to_string()).await
 }
 
 pub async fn open_url(url: String) -> Result<String, AppError> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err(AppError::Process("only http/https URLs can be opened".into()));
+        return Err(AppError::Process(
+            "only http/https URLs can be opened".into(),
+        ));
     }
     run_open_command(url).await
 }
 
-pub async fn pick_file(title: &'static str, filters: Vec<(&'static str, Vec<&'static str>)>) -> Option<PathBuf> {
+pub async fn pick_file(
+    title: &'static str,
+    filters: Vec<(&'static str, Vec<&'static str>)>,
+) -> Option<PathBuf> {
     tokio::task::spawn_blocking(move || {
         let mut dialog = rfd::FileDialog::new().set_title(title);
         for (name, extensions) in filters {
@@ -55,9 +63,15 @@ pub async fn pick_file(title: &'static str, filters: Vec<(&'static str, Vec<&'st
     .flatten()
 }
 
-pub async fn save_file(title: &'static str, file_name: String, filters: Vec<(&'static str, Vec<&'static str>)>) -> Option<PathBuf> {
+pub async fn save_file(
+    title: &'static str,
+    file_name: String,
+    filters: Vec<(&'static str, Vec<&'static str>)>,
+) -> Option<PathBuf> {
     tokio::task::spawn_blocking(move || {
-        let mut dialog = rfd::FileDialog::new().set_title(title).set_file_name(&file_name);
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(title)
+            .set_file_name(&file_name);
         for (name, extensions) in filters {
             dialog = dialog.add_filter(name, &extensions);
         }
@@ -75,7 +89,9 @@ async fn run_open_command(target: String) -> Result<String, AppError> {
     if status.success() {
         Ok(format!("opened {target}"))
     } else {
-        Err(AppError::Process(format!("open command failed for {target}: {status}")))
+        Err(AppError::Process(format!(
+            "open command failed for {target}: {status}"
+        )))
     }
 }
 

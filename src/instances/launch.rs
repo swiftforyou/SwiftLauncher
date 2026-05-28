@@ -20,7 +20,9 @@ pub async fn validate_java(java_path: &str) -> Result<String, AppError> {
     if output.status.success() || text.contains("version") {
         Ok(text.lines().next().unwrap_or("java detected").to_string())
     } else {
-        Err(AppError::Process("java executable did not report a version".into()))
+        Err(AppError::Process(
+            "java executable did not report a version".into(),
+        ))
     }
 }
 
@@ -30,10 +32,15 @@ pub async fn launch_instance(instance: Instance, session: Session) -> Result<Str
     let child = command.spawn()?;
     let pid = child.id().unwrap_or_default();
     drop(child);
-    Ok(format!("{instance_name} launched with pid {pid} via {java_version_line}"))
+    Ok(format!(
+        "{instance_name} launched with pid {pid} via {java_version_line}"
+    ))
 }
 
-pub async fn prepare_launch_command(instance: Instance, session: Session) -> Result<(Command, String), AppError> {
+pub async fn prepare_launch_command(
+    instance: Instance,
+    session: Session,
+) -> Result<(Command, String), AppError> {
     install::install_minecraft_version(&instance.minecraft_version).await?;
 
     let root = data_dir()?;
@@ -42,7 +49,10 @@ pub async fn prepare_launch_command(instance: Instance, session: Session) -> Res
     let version_json_path = version_dir.join(format!("{effective_version}.json"));
     let mut version_json = read_version_json(&version_json_path).await?;
     let parent_version = if let Some(parent) = version_json.inherits_from.clone() {
-        let parent_path = root.join("versions").join(&parent).join(format!("{parent}.json"));
+        let parent_path = root
+            .join("versions")
+            .join(&parent)
+            .join(format!("{parent}.json"));
         Some(read_version_json(&parent_path).await?)
     } else {
         None
@@ -63,7 +73,14 @@ pub async fn prepare_launch_command(instance: Instance, session: Session) -> Res
     extract_natives(&version_json, &libraries_dir, &natives_dir).await?;
 
     let classpath = build_classpath(&version_json, &libraries_dir, &root, &effective_version)?;
-    let variables = LaunchVariables::new(&instance, &session, &root, &natives_dir, &classpath, &version_json);
+    let variables = LaunchVariables::new(
+        &instance,
+        &session,
+        &root,
+        &natives_dir,
+        &classpath,
+        &version_json,
+    );
     let (jvm_args, game_args) = build_arguments(&version_json, &variables)?;
 
     let mut command = Command::new(&java.path);
@@ -316,7 +333,10 @@ impl LaunchVariables {
         values.insert("version_name".into(), instance.minecraft_version.clone());
         values.insert("game_directory".into(), path_string(&game_dir));
         values.insert("assets_root".into(), path_string(&root.join("assets")));
-        values.insert("assets_index_name".into(), version_json.asset_index.id.clone());
+        values.insert(
+            "assets_index_name".into(),
+            version_json.asset_index.id.clone(),
+        );
         values.insert("auth_uuid".into(), session.uuid.clone());
         values.insert("auth_access_token".into(), session.access_token.clone());
         values.insert("clientid".into(), String::new());
@@ -328,9 +348,18 @@ impl LaunchVariables {
         values.insert("launcher_version".into(), env!("CARGO_PKG_VERSION").into());
         values.insert("classpath".into(), classpath.to_string());
         values.insert("classpath_separator".into(), classpath_separator().into());
-        values.insert("library_directory".into(), path_string(&root.join("libraries")));
-        values.insert("resolution_width".into(), instance.resolution_width.to_string());
-        values.insert("resolution_height".into(), instance.resolution_height.to_string());
+        values.insert(
+            "library_directory".into(),
+            path_string(&root.join("libraries")),
+        );
+        values.insert(
+            "resolution_width".into(),
+            instance.resolution_width.to_string(),
+        );
+        values.insert(
+            "resolution_height".into(),
+            instance.resolution_height.to_string(),
+        );
 
         Self { values }
     }
@@ -349,7 +378,10 @@ async fn read_version_json(path: &Path) -> Result<VersionJson, AppError> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-fn build_arguments(version: &VersionJson, variables: &LaunchVariables) -> Result<(Vec<String>, Vec<String>), AppError> {
+fn build_arguments(
+    version: &VersionJson,
+    variables: &LaunchVariables,
+) -> Result<(Vec<String>, Vec<String>), AppError> {
     if let Some(arguments) = &version.arguments {
         let jvm = expand_arguments(&arguments.jvm, variables);
         let game = expand_arguments(&arguments.game, variables);
@@ -381,7 +413,9 @@ fn expand_arguments(arguments: &[Argument], variables: &LaunchVariables) -> Vec<
             Argument::String(value) => out.push(variables.apply(value)),
             Argument::Ruled { rules, value } if rules_allowed(rules.as_deref()) => match value {
                 ArgumentValue::One(value) => out.push(variables.apply(value)),
-                ArgumentValue::Many(values) => out.extend(values.iter().map(|value| variables.apply(value))),
+                ArgumentValue::Many(values) => {
+                    out.extend(values.iter().map(|value| variables.apply(value)))
+                }
             },
             Argument::Ruled { .. } => {}
         }
@@ -414,7 +448,12 @@ fn build_classpath(
         entries.push(path_string(&libraries_dir.join(&path)));
     }
     let client_version = version.inherits_from.as_deref().unwrap_or(version_id);
-    entries.push(path_string(&root.join("versions").join(client_version).join(format!("{client_version}.jar"))));
+    entries.push(path_string(
+        &root
+            .join("versions")
+            .join(client_version)
+            .join(format!("{client_version}.jar")),
+    ));
     Ok(entries.join(classpath_separator()))
 }
 
@@ -430,20 +469,22 @@ fn maven_name_to_path(name: &str) -> String {
 fn effective_version_id(instance: &Instance) -> Result<String, AppError> {
     match instance.loader {
         LoaderKind::Vanilla => Ok(instance.minecraft_version.clone()),
-        LoaderKind::Fabric | LoaderKind::Quilt => instance.loader_version.clone().ok_or_else(|| {
-            AppError::Instance(format!(
-                "{} profile missing for Minecraft {}. Reinstall this instance.",
-                instance.loader, instance.minecraft_version
-            ))
-        }),
-        LoaderKind::Forge | LoaderKind::NeoForge => Err(AppError::Instance(format!(
-            "{} launch profile is not installed yet",
-            instance.loader
-        ))),
+        LoaderKind::Fabric | LoaderKind::Quilt | LoaderKind::Forge | LoaderKind::NeoForge => {
+            instance.loader_version.clone().ok_or_else(|| {
+                AppError::Instance(format!(
+                    "{} profile missing for Minecraft {}. Reinstall this instance.",
+                    instance.loader, instance.minecraft_version
+                ))
+            })
+        }
     }
 }
 
-async fn extract_natives(version: &VersionJson, libraries_dir: &Path, natives_dir: &Path) -> Result<(), AppError> {
+async fn extract_natives(
+    version: &VersionJson,
+    libraries_dir: &Path,
+    natives_dir: &Path,
+) -> Result<(), AppError> {
     let mut native_jars = Vec::new();
     for library in &version.libraries {
         if !library_allowed(library) {
@@ -479,7 +520,9 @@ fn extract_native_jar(jar_path: &Path, destination: &Path) -> Result<(), AppErro
     let file = std::fs::File::open(jar_path).map_err(|e| AppError::Process(e.to_string()))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| AppError::Process(e.to_string()))?;
     for index in 0..archive.len() {
-        let mut file = archive.by_index(index).map_err(|e| AppError::Process(e.to_string()))?;
+        let mut file = archive
+            .by_index(index)
+            .map_err(|e| AppError::Process(e.to_string()))?;
         let name = file.name();
         if name.ends_with('/') || name.starts_with("META-INF/") {
             continue;
@@ -488,7 +531,8 @@ fn extract_native_jar(jar_path: &Path, destination: &Path) -> Result<(), AppErro
             continue;
         };
         let output_path = destination.join(file_name);
-        let mut output = std::fs::File::create(output_path).map_err(|e| AppError::Process(e.to_string()))?;
+        let mut output =
+            std::fs::File::create(output_path).map_err(|e| AppError::Process(e.to_string()))?;
         std::io::copy(&mut file, &mut output).map_err(|e| AppError::Process(e.to_string()))?;
     }
     Ok(())
@@ -513,7 +557,11 @@ fn rules_allowed(rules: Option<&[Rule]>) -> bool {
 }
 
 fn rule_matches_current_context(rule: &Rule) -> bool {
-    if rule.features.as_ref().is_some_and(|features| !features.is_empty()) {
+    if rule
+        .features
+        .as_ref()
+        .is_some_and(|features| !features.is_empty())
+    {
         return false;
     }
 

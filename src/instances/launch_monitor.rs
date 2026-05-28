@@ -58,7 +58,8 @@ impl LaunchMonitor {
             .unwrap_or(0);
 
         let failed_before_ready = !self.game_ready && !process_success && runtime_seconds < 180;
-        let success = process_success && self.game_ready && !self.crash_detected && !failed_before_ready;
+        let success =
+            process_success && self.game_ready && !self.crash_detected && !failed_before_ready;
 
         let summary = if success {
             format!("exited after {playtime_seconds}s of play")

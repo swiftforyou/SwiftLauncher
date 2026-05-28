@@ -48,7 +48,10 @@ struct AuthResponse {
 pub async fn authenticate(username: String, password: String) -> Result<Session, AppError> {
     let client_token = storage::yggdrasil_client_token()?;
     let payload = AuthRequest {
-        agent: Agent { name: "Minecraft", version: 1 },
+        agent: Agent {
+            name: "Minecraft",
+            version: 1,
+        },
         username,
         password,
         client_token,
@@ -63,7 +66,11 @@ pub async fn authenticate(username: String, password: String) -> Result<Session,
     let status = response.status();
     let body = response.text().await?;
     if !status.is_success() {
-        return Err(crate::auth::elyby::yggdrasil_error(status.as_u16(), &body, AuthProvider::LittleSkin));
+        return Err(crate::auth::elyby::yggdrasil_error(
+            status.as_u16(),
+            &body,
+            AuthProvider::LittleSkin,
+        ));
     }
     let response: AuthResponse = serde_json::from_str(&body)?;
 
@@ -75,7 +82,9 @@ pub async fn authenticate(username: String, password: String) -> Result<Session,
         access_token: response.access_token,
         refresh_token: Some(response.client_token),
         expires_at_unix: crate::auth::microsoft::far_future_unix(),
-        avatar_url: Some(crate::auth::avatar::avatar_url_for_username(&response.selected_profile.name)),
+        avatar_url: Some(crate::auth::avatar::avatar_url_for_username(
+            &response.selected_profile.name,
+        )),
     })
 }
 
@@ -131,7 +140,13 @@ mod tests {
         out
     }
 
-    async fn spawn_capture_server(response_body: Vec<u8>) -> (String, oneshot::Receiver<(String, String)>, tokio::task::JoinHandle<()>) {
+    async fn spawn_capture_server(
+        response_body: Vec<u8>,
+    ) -> (
+        String,
+        oneshot::Receiver<(String, String)>,
+        tokio::task::JoinHandle<()>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = oneshot::channel();
@@ -164,7 +179,8 @@ mod tests {
                             if let Some(value) = lower.strip_prefix("content-length:") {
                                 content_length = value.trim().parse::<usize>().ok();
                             }
-                            if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
+                            if lower.starts_with("transfer-encoding:") && lower.contains("chunked")
+                            {
                                 chunked = true;
                             }
                         }
@@ -180,7 +196,9 @@ mod tests {
                         }
                     } else if chunked {
                         let body = &data[body_start..];
-                        if body.windows(5).any(|w| w == b"0\r\n\r\n") || body.windows(6).any(|w| w == b"\r\n0\r\n\r\n") {
+                        if body.windows(5).any(|w| w == b"0\r\n\r\n")
+                            || body.windows(6).any(|w| w == b"\r\n0\r\n\r\n")
+                        {
                             break;
                         }
                     }
@@ -222,7 +240,10 @@ mod tests {
     }
 
     fn temp_dir(prefix: &str) -> PathBuf {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let pid = std::process::id();
         let dir = std::env::temp_dir().join(format!("swift-launcher-test-{prefix}-{pid}-{now}"));
         std::fs::create_dir_all(&dir).unwrap();

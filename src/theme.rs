@@ -159,7 +159,12 @@ pub fn shell(_: &Theme) -> container::Style {
     container::Style {
         text_color: Some(p.text),
         background: Some(Background::Color(p.mantle)),
-        border: border::rounded(10).color(Color { a: 0.85, ..p.border }).width(1),
+        border: border::rounded(10)
+            .color(Color {
+                a: 0.85,
+                ..p.border
+            })
+            .width(1),
         shadow: Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
             offset: iced::Vector::new(0.0, 18.0),
@@ -173,7 +178,12 @@ pub fn toolbar(_: &Theme) -> container::Style {
     container::Style {
         text_color: Some(p.text),
         background: Some(Background::Color(p.background)),
-        border: border::rounded(8).color(Color { a: 0.55, ..p.border }).width(1),
+        border: border::rounded(8)
+            .color(Color {
+                a: 0.55,
+                ..p.border
+            })
+            .width(1),
         shadow: Shadow::default(),
     }
 }
@@ -183,7 +193,9 @@ pub fn card(_: &Theme) -> container::Style {
     container::Style {
         text_color: Some(p.text),
         background: Some(Background::Color(p.surface)),
-        border: border::rounded(8).color(Color { a: 0.7, ..p.border }).width(1),
+        border: border::rounded(8)
+            .color(Color { a: 0.7, ..p.border })
+            .width(1),
         shadow: Shadow::default(),
     }
 }
@@ -193,7 +205,12 @@ pub fn badge(_: &Theme) -> container::Style {
     container::Style {
         text_color: Some(p.muted),
         background: Some(Background::Color(p.mantle)),
-        border: border::rounded(99).color(Color { a: 0.55, ..p.border }).width(1),
+        border: border::rounded(99)
+            .color(Color {
+                a: 0.55,
+                ..p.border
+            })
+            .width(1),
         shadow: Shadow::default(),
     }
 }
@@ -202,7 +219,10 @@ pub fn banner(_: &Theme) -> container::Style {
     let p = DARK.palette();
     container::Style {
         text_color: Some(p.text),
-        background: Some(Background::Color(Color { a: 0.20, ..p.danger })),
+        background: Some(Background::Color(Color {
+            a: 0.20,
+            ..p.danger
+        })),
         border: border::rounded(8).color(p.danger).width(1),
         shadow: Shadow::default(),
     }
@@ -234,7 +254,10 @@ pub fn secondary_button(_: &Theme, status: button::Status) -> button::Style {
     let bg = match status {
         button::Status::Hovered => p.surface_high,
         button::Status::Pressed => p.surface,
-        button::Status::Disabled => Color { a: 0.45, ..p.surface },
+        button::Status::Disabled => Color {
+            a: 0.45,
+            ..p.surface
+        },
         button::Status::Active => p.surface,
     };
     button::Style {
@@ -248,8 +271,14 @@ pub fn secondary_button(_: &Theme, status: button::Status) -> button::Style {
 pub fn ghost_button(_: &Theme, status: button::Status) -> button::Style {
     let p = DARK.palette();
     let bg = match status {
-        button::Status::Hovered => Color { a: 0.42, ..p.surface_high },
-        button::Status::Pressed => Color { a: 0.34, ..p.surface },
+        button::Status::Hovered => Color {
+            a: 0.42,
+            ..p.surface_high
+        },
+        button::Status::Pressed => Color {
+            a: 0.34,
+            ..p.surface
+        },
         button::Status::Disabled | button::Status::Active => Color::TRANSPARENT,
     };
     button::Style {
@@ -301,7 +330,10 @@ pub fn progress(_: &Theme) -> progress_bar::Style {
     }
 }
 
-pub fn pick_list(_: &Theme, status: iced::widget::pick_list::Status) -> iced::widget::pick_list::Style {
+pub fn pick_list(
+    _: &Theme,
+    status: iced::widget::pick_list::Status,
+) -> iced::widget::pick_list::Style {
     let p = DARK.palette();
     let (background, border_color) = match status {
         iced::widget::pick_list::Status::Active => (p.mantle, p.border),

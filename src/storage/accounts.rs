@@ -3,7 +3,11 @@ use crate::error::AppError;
 use crate::storage::{SledStore, KEY_ACCOUNT_PREFIX, KEY_ACTIVE_ACCOUNT};
 
 pub fn account_key(session: &Session) -> String {
-    format!("{KEY_ACCOUNT_PREFIX}{}:{}", session.provider.as_key(), session.uuid)
+    format!(
+        "{KEY_ACCOUNT_PREFIX}{}:{}",
+        session.provider.as_key(),
+        session.uuid
+    )
 }
 
 pub fn save_session(store: &SledStore, session: &Session) -> Result<(), AppError> {
@@ -13,7 +17,8 @@ pub fn save_session(store: &SledStore, session: &Session) -> Result<(), AppError
 }
 
 pub fn list_sessions(store: &SledStore) -> Result<Vec<Session>, AppError> {
-    let mut sessions = store.scan_prefix_excluding::<Session>(KEY_ACCOUNT_PREFIX, &[KEY_ACTIVE_ACCOUNT])?;
+    let mut sessions =
+        store.scan_prefix_excluding::<Session>(KEY_ACCOUNT_PREFIX, &[KEY_ACTIVE_ACCOUNT])?;
     sessions.sort_by(|a, b| a.username.cmp(&b.username));
     Ok(sessions)
 }

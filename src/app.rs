@@ -4,14 +4,16 @@ use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iced::widget::scrollable::{self, Id as ScrollableId, RelativeOffset};
-use iced::{stream, time, Element, Subscription, Task};
+use iced::{stream, time, Element, Length, Subscription, Task};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::auth::{AuthProvider, Session};
 use crate::download::DownloadControl;
 use crate::error::AppError;
 use crate::instances::mods::{InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail};
-use crate::instances::{Instance, InstanceManager, InstanceRunState, InstanceTab, LoaderKind, SortMode};
+use crate::instances::{
+    Instance, InstanceManager, InstanceRunState, InstanceTab, LoaderKind, SortMode,
+};
 use crate::messages::Message;
 use crate::state::{AppState, StartupData};
 use crate::storage::{accounts, settings, SledStore};
@@ -184,15 +186,27 @@ impl SwiftLauncher {
                         })
                         .collect();
                     self.settings = data.settings.clone();
-                    self.theme = SwiftTheme { mode: self.settings.theme_mode, accent: self.settings.accent };
+                    self.theme = SwiftTheme {
+                        mode: self.settings.theme_mode,
+                        accent: self.settings.accent,
+                    };
                     self.store = SledStore::open().ok();
-                    self.state = if self.active_session.is_some() { AppState::Home } else { AppState::Login };
+                    self.state = if self.active_session.is_some() {
+                        AppState::Home
+                    } else {
+                        AppState::Login
+                    };
                     let avatar_tasks: Vec<Task<Message>> = accounts_for_avatars
                         .into_iter()
                         .map(|account| {
                             let uuid = account.uuid.clone();
                             Task::perform(
-                                async move { crate::auth::avatar::cache_avatar(&account).await.ok().flatten() },
+                                async move {
+                                    crate::auth::avatar::cache_avatar(&account)
+                                        .await
+                                        .ok()
+                                        .flatten()
+                                },
                                 move |path| Message::AvatarCached {
                                     uuid: uuid.clone(),
                                     path,
@@ -248,8 +262,12 @@ impl SwiftLauncher {
             Message::NewInstance => {
                 self.create_modal_open = true;
                 self.error_banner = None;
-                if self.create_versions.len() <= crate::instances::create::fallback_versions().len() {
-                    Task::perform(crate::instances::create::fetch_available_versions(), Message::VersionsLoaded)
+                if self.create_versions.len() <= crate::instances::create::fallback_versions().len()
+                {
+                    Task::perform(
+                        crate::instances::create::fetch_available_versions(),
+                        Message::VersionsLoaded,
+                    )
                 } else {
                     Task::none()
                 }
@@ -262,7 +280,12 @@ impl SwiftLauncher {
             }
             Message::PickImportZip => Task::perform(
                 crate::system::pick_file("Import Swift instance", vec![("Zip", vec!["zip"])]),
-                |path| Message::ImportPathChanged(path.map(|path| path.display().to_string()).unwrap_or_default()),
+                |path| {
+                    Message::ImportPathChanged(
+                        path.map(|path| path.display().to_string())
+                            .unwrap_or_default(),
+                    )
+                },
             ),
             Message::ImportPathChanged(value) => {
                 if !value.is_empty() {
@@ -277,7 +300,10 @@ impl SwiftLauncher {
                     return Task::none();
                 }
                 self.import_busy = true;
-                Task::perform(crate::instances::archive::import_instance(path), Message::InstanceImported)
+                Task::perform(
+                    crate::instances::archive::import_instance(path),
+                    Message::InstanceImported,
+                )
             }
             Message::ImportInstanceCancel => {
                 if self.import_busy {
@@ -294,7 +320,8 @@ impl SwiftLauncher {
                         let mut instance = instance;
                         apply_instance_defaults(&mut instance, &self.settings);
                         if let Some(store) = &self.store {
-                            if let Err(error) = InstanceManager::new(store.clone()).save(&instance) {
+                            if let Err(error) = InstanceManager::new(store.clone()).save(&instance)
+                            {
                                 self.error_banner = Some(error.to_string());
                             }
                         }
@@ -310,7 +337,10 @@ impl SwiftLauncher {
                 match result {
                     Ok(versions) => {
                         if !versions.is_empty() {
-                            if !versions.iter().any(|version| version == &self.create_version) {
+                            if !versions
+                                .iter()
+                                .any(|version| version == &self.create_version)
+                            {
                                 self.create_version = versions[0].clone();
                             }
                             self.create_versions = versions;
@@ -327,7 +357,11 @@ impl SwiftLauncher {
                 match result {
                     Ok(versions) => {
                         self.create_loader_versions = versions;
-                        self.create_loader_version = self.create_loader_versions.first().cloned().unwrap_or_default();
+                        self.create_loader_version = self
+                            .create_loader_versions
+                            .first()
+                            .cloned()
+                            .unwrap_or_default();
                     }
                     Err(error) => {
                         self.create_loader_versions.clear();
@@ -359,7 +393,8 @@ impl SwiftLauncher {
                 let (control_tx, _) = tokio::sync::watch::channel(DownloadControl::Run);
                 self.create_install_control = Some(control_tx);
                 self.create_install_id = self.create_install_id.wrapping_add(1);
-                self.create_install_status = format!("Starting Minecraft {} install", self.create_version);
+                self.create_install_status =
+                    format!("Starting Minecraft {} install", self.create_version);
                 self.create_install_progress = 0.01;
                 Task::none()
             }
@@ -418,7 +453,8 @@ impl SwiftLauncher {
                 match result {
                     Ok(instance) => {
                         if let Some(store) = &self.store {
-                            if let Err(error) = InstanceManager::new(store.clone()).save(&instance) {
+                            if let Err(error) = InstanceManager::new(store.clone()).save(&instance)
+                            {
                                 self.error_banner = Some(error.to_string());
                             }
                         }
@@ -511,7 +547,11 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::PlayInstance(id) => {
-                let instance = self.instances.iter().find(|instance| instance.id == id).cloned();
+                let instance = self
+                    .instances
+                    .iter()
+                    .find(|instance| instance.id == id)
+                    .cloned();
                 let session = self.active_session.clone();
                 if let Some(target) = self.instances.iter_mut().find(|instance| instance.id == id) {
                     target.run_state = InstanceRunState::Preparing;
@@ -520,7 +560,8 @@ impl SwiftLauncher {
                     (Some(instance), Some(session)) => {
                         let (stop_tx, _) = tokio::sync::watch::channel(false);
                         self.launch_run_id = self.launch_run_id.wrapping_add(1);
-                        self.launch_log.push(format!("preparing launch: {}", instance.name));
+                        self.launch_log
+                            .push(format!("preparing launch: {}", instance.name));
                         self.active_launches.push(ActiveLaunch {
                             run_id: self.launch_run_id,
                             instance,
@@ -540,10 +581,15 @@ impl SwiftLauncher {
                 }
             }
             Message::StopInstance(id) => {
-                for launch in self.active_launches.iter().filter(|launch| launch.instance.id == id) {
+                for launch in self
+                    .active_launches
+                    .iter()
+                    .filter(|launch| launch.instance.id == id)
+                {
                     let _ = launch.stop_tx.send(true);
                 }
-                if let Some(instance) = self.instances.iter_mut().find(|instance| instance.id == id) {
+                if let Some(instance) = self.instances.iter_mut().find(|instance| instance.id == id)
+                {
                     instance.run_state = InstanceRunState::Preparing;
                 }
                 Task::none()
@@ -583,7 +629,11 @@ impl SwiftLauncher {
             Message::LaunchFinished(result) => {
                 for instance in &mut self.instances {
                     if matches!(instance.run_state, InstanceRunState::Preparing) {
-                        instance.run_state = if result.is_ok() { InstanceRunState::Running } else { InstanceRunState::Idle };
+                        instance.run_state = if result.is_ok() {
+                            InstanceRunState::Running
+                        } else {
+                            InstanceRunState::Idle
+                        };
                     }
                 }
                 match result {
@@ -611,20 +661,28 @@ impl SwiftLauncher {
                 playtime_seconds,
                 crash_report,
             } => {
-                self.active_launches.retain(|launch| launch.instance.id != instance_id);
+                self.active_launches
+                    .retain(|launch| launch.instance.id != instance_id);
                 self.launch_status_by_instance.remove(&instance_id);
                 let exit_log;
                 let error_msg;
-                if let Some(instance) = self.instances.iter_mut().find(|instance| instance.id == instance_id) {
+                if let Some(instance) = self
+                    .instances
+                    .iter_mut()
+                    .find(|instance| instance.id == instance_id)
+                {
                     instance.run_state = InstanceRunState::Idle;
                     if game_ready {
-                        instance.playtime_seconds = instance.playtime_seconds.saturating_add(playtime_seconds);
+                        instance.playtime_seconds =
+                            instance.playtime_seconds.saturating_add(playtime_seconds);
                         instance.last_played_unix = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .ok()
                             .map(|duration| duration.as_secs());
                     }
-                    if let Some(shot) = crate::instances::screenshots::refresh_artwork(&instance.path) {
+                    if let Some(shot) =
+                        crate::instances::screenshots::refresh_artwork(&instance.path)
+                    {
                         instance.artwork_path = Some(shot);
                     }
                     let name = instance.name.clone();
@@ -665,21 +723,32 @@ impl SwiftLauncher {
                     self.error_banner = Some(message);
                 }
                 if let Some(store) = &self.store {
-                    if let Some(instance) = self.instances.iter().find(|instance| instance.id == instance_id) {
+                    if let Some(instance) = self
+                        .instances
+                        .iter()
+                        .find(|instance| instance.id == instance_id)
+                    {
                         let _ = InstanceManager::new(store.clone()).save(instance);
                     }
                 }
                 if let Some(result) = crash_report {
                     match result {
                         Ok(path) => self.launch_log.push(format!("crash report saved: {path}")),
-                        Err(error) => self.error_banner = Some(format!("crash report failed: {error}")),
+                        Err(error) => {
+                            self.error_banner = Some(format!("crash report failed: {error}"))
+                        }
                     }
                 }
                 Task::none()
             }
             Message::LaunchFailed { instance_id, error } => {
-                self.active_launches.retain(|launch| launch.instance.id != instance_id);
-                if let Some(instance) = self.instances.iter_mut().find(|instance| instance.id == instance_id) {
+                self.active_launches
+                    .retain(|launch| launch.instance.id != instance_id);
+                if let Some(instance) = self
+                    .instances
+                    .iter_mut()
+                    .find(|instance| instance.id == instance_id)
+                {
                     instance.run_state = InstanceRunState::Idle;
                 }
                 self.error_banner = Some(error.to_string());
@@ -690,15 +759,12 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::AssetsVerified { current, total } => {
-                self.launch_log.push(format!("assets verified {current}/{total}"));
+                self.launch_log
+                    .push(format!("assets verified {current}/{total}"));
                 Task::none()
             }
-            Message::OpenInstanceFiles(id) => {
-                self.open_instance_path_task(&id, "")
-            }
-            Message::OpenInstanceLogs(id) => {
-                self.open_instance_path_task(&id, "logs")
-            }
+            Message::OpenInstanceFiles(id) => self.open_instance_path_task(&id, ""),
+            Message::OpenInstanceLogs(id) => self.open_instance_path_task(&id, "logs"),
             Message::OpenInstanceCrashReports(id) => {
                 self.open_instance_path_task(&id, "crash-reports")
             }
@@ -729,12 +795,26 @@ impl SwiftLauncher {
                     .map(|instance| format!("{}.zip", instance.name.replace(' ', "-")))
                     .unwrap_or_else(|| "swift-instance.zip".into());
                 Task::perform(
-                    crate::system::save_file("Export Swift instance", name, vec![("Zip", vec!["zip"])]),
-                    |path| Message::ExportPathChanged(path.map(|path| path.display().to_string()).unwrap_or_default()),
+                    crate::system::save_file(
+                        "Export Swift instance",
+                        name,
+                        vec![("Zip", vec!["zip"])],
+                    ),
+                    |path| {
+                        Message::ExportPathChanged(
+                            path.map(|path| path.display().to_string())
+                                .unwrap_or_default(),
+                        )
+                    },
                 )
             }
             Message::ExportInstance(id) => {
-                let Some(instance) = self.instances.iter().find(|instance| instance.id == id).cloned() else {
+                let Some(instance) = self
+                    .instances
+                    .iter()
+                    .find(|instance| instance.id == id)
+                    .cloned()
+                else {
                     self.error_banner = Some("instance missing".into());
                     return Task::none();
                 };
@@ -744,7 +824,10 @@ impl SwiftLauncher {
                     return Task::none();
                 }
                 self.export_busy = true;
-                Task::perform(crate::instances::archive::export_instance(instance, path), Message::InstanceExported)
+                Task::perform(
+                    crate::instances::archive::export_instance(instance, path),
+                    Message::InstanceExported,
+                )
             }
             Message::InstanceExported(result) => {
                 self.export_busy = false;
@@ -812,7 +895,10 @@ impl SwiftLauncher {
                     return Task::none();
                 };
                 self.mods_loading = true;
-                Task::perform(crate::instances::mods::delete_mod(path, mod_id), Message::ModDeleted)
+                Task::perform(
+                    crate::instances::mods::delete_mod(path, mod_id),
+                    Message::ModDeleted,
+                )
             }
             Message::ModDeleted(result) => {
                 self.mods_loading = false;
@@ -828,8 +914,16 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::PickModJar => Task::perform(
-                crate::system::pick_file("Import Minecraft mod", vec![("Java archive", vec!["jar"])]),
-                |path| Message::ModImportPathChanged(path.map(|path| path.display().to_string()).unwrap_or_default()),
+                crate::system::pick_file(
+                    "Import Minecraft mod",
+                    vec![("Java archive", vec!["jar"])],
+                ),
+                |path| {
+                    Message::ModImportPathChanged(
+                        path.map(|path| path.display().to_string())
+                            .unwrap_or_default(),
+                    )
+                },
             ),
             Message::ModImportPathChanged(value) => {
                 if !value.is_empty() {
@@ -848,7 +942,10 @@ impl SwiftLauncher {
                     return Task::none();
                 }
                 self.mods_loading = true;
-                Task::perform(crate::instances::mods::import_mod(instance_path, source), Message::ModImported)
+                Task::perform(
+                    crate::instances::mods::import_mod(instance_path, source),
+                    Message::ModImported,
+                )
             }
             Message::ModImported(result) => {
                 self.mods_loading = false;
@@ -924,6 +1021,7 @@ impl SwiftLauncher {
                 self.mods_loading = true;
                 Task::perform(
                     crate::instances::mods::install_modrinth_project(
+                        self.modrinth_kind,
                         instance.path,
                         instance.minecraft_version,
                         instance.loader,
@@ -962,6 +1060,9 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::SubmitLogin => {
+                if self.auth_busy {
+                    return Task::none();
+                }
                 self.auth_busy = true;
                 self.error_banner = None;
                 if self.login_provider == AuthProvider::Microsoft {
@@ -974,14 +1075,20 @@ impl SwiftLauncher {
                         password = format!("{}:{}", password, self.totp.trim());
                     }
                     Task::perform(
-                        crate::auth::authenticate(self.login_provider, self.username.clone(), password),
+                        crate::auth::authenticate(
+                            self.login_provider,
+                            self.username.clone(),
+                            password,
+                        ),
                         Message::AuthFinished,
                     )
                 }
             }
-            Message::MicrosoftDeviceReady { user_code, verification_uri } => {
+            Message::MicrosoftDeviceReady {
+                user_code,
+                verification_uri,
+            } => {
                 self.device_flow = Some((user_code, verification_uri));
-                self.auth_busy = false;
                 Task::none()
             }
             Message::MicrosoftApproved(result) | Message::AuthFinished(result) => {
@@ -993,7 +1100,9 @@ impl SwiftLauncher {
                     }
                     Err(error) => {
                         let message = error.to_string();
-                        if self.login_provider == AuthProvider::ElyBy && message.contains("two factor auth") {
+                        if self.login_provider == AuthProvider::ElyBy
+                            && message.contains("two factor auth")
+                        {
                             self.error_banner = Some("Ely.by account has 2FA enabled. Enter current 2FA code, then sign in again.".into());
                         } else {
                             self.error_banner = Some(message);
@@ -1004,9 +1113,12 @@ impl SwiftLauncher {
             }
             Message::CopyVerificationUrl => {
                 if let Some((_, url)) = &self.device_flow {
-                    self.launch_log.push(format!("verification URL: {url}"));
+                    let url = url.clone();
+                    self.launch_log.push("verification URL copied".into());
+                    Task::batch([iced::clipboard::write(url)])
+                } else {
+                    Task::none()
                 }
-                Task::none()
             }
             Message::CopyLogs => {
                 let text = self.launch_log.join("\n");
@@ -1017,7 +1129,11 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::AccountSelected(uuid) => {
-                self.active_session = self.accounts.iter().find(|session| session.uuid == uuid).cloned();
+                self.active_session = self
+                    .accounts
+                    .iter()
+                    .find(|session| session.uuid == uuid)
+                    .cloned();
                 if let (Some(store), Some(session)) = (&self.store, &self.active_session) {
                     let _ = accounts::save_session(store, session);
                 }
@@ -1025,19 +1141,32 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::SignOut(uuid) => {
-                let session_to_invalidate = self.accounts.iter().find(|session| session.uuid == uuid).cloned();
+                let session_to_invalidate = self
+                    .accounts
+                    .iter()
+                    .find(|session| session.uuid == uuid)
+                    .cloned();
                 if let Some(store) = &self.store {
-                    if let Some(session) = self.accounts.iter().find(|session| session.uuid == uuid) {
+                    if let Some(session) = self.accounts.iter().find(|session| session.uuid == uuid)
+                    {
                         let _ = accounts::remove_session(store, session);
                     }
                 }
                 self.accounts.retain(|session| session.uuid != uuid);
-                if self.active_session.as_ref().map(|session| session.uuid.as_str()) == Some(uuid.as_str()) {
+                if self
+                    .active_session
+                    .as_ref()
+                    .map(|session| session.uuid.as_str())
+                    == Some(uuid.as_str())
+                {
                     self.active_session = None;
                     self.state = AppState::Login;
                 }
                 match session_to_invalidate {
-                    Some(session) => Task::perform(async move { crate::auth::invalidate(&session).await }, |_| Message::Noop),
+                    Some(session) => Task::perform(
+                        async move { crate::auth::invalidate(&session).await },
+                        |_| Message::Noop,
+                    ),
                     None => Task::none(),
                 }
             }
@@ -1097,17 +1226,25 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::PickDefaultJava => Task::perform(
-                crate::system::pick_file("Choose Java executable", vec![("Java", vec!["java", "exe"])]),
-                |path| Message::DefaultJavaChanged(path.map(|path| path.display().to_string()).unwrap_or_default()),
+                crate::system::pick_file(
+                    "Choose Java executable",
+                    vec![("Java", vec!["java", "exe"])],
+                ),
+                |path| {
+                    Message::DefaultJavaChanged(
+                        path.map(|path| path.display().to_string())
+                            .unwrap_or_default(),
+                    )
+                },
             ),
             Message::ValidateDefaultJava => {
                 let java = self.settings.default_java_path.clone();
                 self.java_status = "Checking Java...".into();
                 Task::perform(
                     async move {
-                        crate::download::java::detect_java(java)
-                            .await
-                            .map(|info| format!("Detected Java {} at {}", info.major, info.path.display()))
+                        crate::download::java::detect_java(java).await.map(|info| {
+                            format!("Detected Java {} at {}", info.major, info.path.display())
+                        })
                     },
                     Message::DefaultJavaValidated,
                 )
@@ -1128,7 +1265,13 @@ impl SwiftLauncher {
                     async move {
                         crate::download::java::download_managed_java(version)
                             .await
-                            .map(|info| format!("Managed Java {} ready: {}", info.major, info.path.display()))
+                            .map(|info| {
+                                format!(
+                                    "Managed Java {} ready: {}",
+                                    info.major,
+                                    info.path.display()
+                                )
+                            })
                     },
                     Message::ManagedJavaReady,
                 )
@@ -1143,15 +1286,13 @@ impl SwiftLauncher {
                 }
                 Task::none()
             }
-            Message::OpenManagedJavaDir => {
-                match crate::download::java::managed_java_root() {
-                    Ok(path) => Task::perform(crate::system::open_path(path), Message::PathOpened),
-                    Err(error) => {
-                        self.error_banner = Some(error.to_string());
-                        Task::none()
-                    }
+            Message::OpenManagedJavaDir => match crate::download::java::managed_java_root() {
+                Ok(path) => Task::perform(crate::system::open_path(path), Message::PathOpened),
+                Err(error) => {
+                    self.error_banner = Some(error.to_string());
+                    Task::none()
                 }
-            }
+            },
             Message::DefaultRamChanged(value) => {
                 self.settings.default_ram_mb = value;
                 self.persist_settings();
@@ -1181,7 +1322,10 @@ impl SwiftLauncher {
                 Task::perform(crate::system::open_url(url), Message::PathOpened)
             }
             Message::DownloadProgress(progress) => {
-                self.launch_log.push(format!("download {} {}", progress.job_id, progress.downloaded_bytes));
+                self.launch_log.push(format!(
+                    "download {} {}",
+                    progress.job_id, progress.downloaded_bytes
+                ));
                 Task::none()
             }
             Message::DownloadEvent(event) => {
@@ -1204,7 +1348,9 @@ impl SwiftLauncher {
 
     pub fn view(&self) -> Element<'_, Message> {
         let base = match self.state {
-            AppState::Loading => crate::screens::loading::view(self.loading_progress, &self.loading_status),
+            AppState::Loading => {
+                crate::screens::loading::view(self.loading_progress, &self.loading_status)
+            }
             AppState::Login => crate::screens::login::view(
                 self.login_provider,
                 &self.username,
@@ -1213,7 +1359,9 @@ impl SwiftLauncher {
                 self.password_visible,
                 self.auth_busy,
                 self.error_banner.as_deref(),
-                self.device_flow.as_ref().map(|(code, url)| (code.as_str(), url.as_str())),
+                self.device_flow
+                    .as_ref()
+                    .map(|(code, url)| (code.as_str(), url.as_str())),
                 self.adding_account,
             ),
             AppState::Home => crate::screens::home::view(
@@ -1260,7 +1408,7 @@ impl SwiftLauncher {
                         crate::instances::InstanceRunState::Running => Some("Running"),
                         crate::instances::InstanceRunState::Idle => None,
                     });
-                return iced::widget::column![base, crate::screens::instance_detail::view(
+                let detail = crate::screens::instance_detail::view(
                     instance,
                     self.selected_tab,
                     &self.mods_search,
@@ -1277,7 +1425,10 @@ impl SwiftLauncher {
                     self.mods_loading,
                     &self.launch_log,
                     launch_status,
-                )]
+                );
+                return iced::widget::stack![base, detail]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
                     .into();
             }
         }
@@ -1296,8 +1447,14 @@ impl SwiftLauncher {
                 self.create_name.clone(),
                 self.create_version.clone(),
                 self.create_loader,
-                if self.create_loader_version.is_empty() { None } else { Some(self.create_loader_version.clone()) },
-                self.create_install_control.as_ref().map(tokio::sync::watch::Sender::subscribe),
+                if self.create_loader_version.is_empty() {
+                    None
+                } else {
+                    Some(self.create_loader_version.clone())
+                },
+                self.create_install_control
+                    .as_ref()
+                    .map(tokio::sync::watch::Sender::subscribe),
             ));
         }
 
@@ -1336,7 +1493,12 @@ impl SwiftLauncher {
     fn cache_avatar_task(session: Session) -> Task<Message> {
         let uuid = session.uuid.clone();
         Task::perform(
-            async move { crate::auth::avatar::cache_avatar(&session).await.ok().flatten() },
+            async move {
+                crate::auth::avatar::cache_avatar(&session)
+                    .await
+                    .ok()
+                    .flatten()
+            },
             move |path| Message::AvatarCached {
                 uuid: uuid.clone(),
                 path,
@@ -1355,7 +1517,11 @@ impl SwiftLauncher {
 
     fn with_selected_instance(&mut self, f: impl FnOnce(&mut Instance)) {
         if let Some(id) = &self.selected_instance {
-            if let Some(instance) = self.instances.iter_mut().find(|instance| &instance.id == id) {
+            if let Some(instance) = self
+                .instances
+                .iter_mut()
+                .find(|instance| &instance.id == id)
+            {
                 f(instance);
             }
         }
@@ -1380,7 +1546,8 @@ impl SwiftLauncher {
     }
 
     fn selected_instance_path(&self) -> Option<std::path::PathBuf> {
-        self.selected_instance().map(|instance| instance.path.clone())
+        self.selected_instance()
+            .map(|instance| instance.path.clone())
     }
 
     fn selected_instance(&self) -> Option<&Instance> {
@@ -1393,7 +1560,10 @@ impl SwiftLauncher {
             return Task::none();
         };
         self.mods_loading = true;
-        Task::perform(async move { crate::instances::mods::list_mods(&path).await }, Message::ModsLoaded)
+        Task::perform(
+            async move { crate::instances::mods::list_mods(&path).await },
+            Message::ModsLoaded,
+        )
     }
 
     fn open_instance_path_task(&mut self, id: &str, child: &str) -> Task<Message> {
@@ -1416,19 +1586,13 @@ impl SwiftLauncher {
             self.create_loader_versions_busy = false;
             return Task::none();
         }
-        if matches!(self.create_loader, LoaderKind::Forge | LoaderKind::NeoForge) {
-            self.create_loader_versions_busy = false;
-            self.error_banner = Some(format!(
-                "{} installer needs Forge processor support. Use Fabric, Quilt, or Vanilla for now.",
-                self.create_loader
-            ));
-            return Task::none();
-        }
         self.create_loader_versions_busy = true;
         let loader = self.create_loader;
         let minecraft_version = self.create_version.clone();
         Task::perform(
-            async move { crate::instances::install::fetch_loader_versions(loader, &minecraft_version).await },
+            async move {
+                crate::instances::install::fetch_loader_versions(loader, &minecraft_version).await
+            },
             Message::LoaderVersionsLoaded,
         )
     }
@@ -1477,14 +1641,16 @@ fn install_subscription(
             use iced::futures::SinkExt;
 
             let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
-            let install = tokio::spawn(crate::instances::create::create_instance_with_status_and_control(
-                name,
-                version,
-                loader,
-                loader_version,
-                Some(status_tx),
-                control_rx,
-            ));
+            let install = tokio::spawn(
+                crate::instances::create::create_instance_with_status_and_control(
+                    name,
+                    version,
+                    loader,
+                    loader_version,
+                    Some(status_tx),
+                    control_rx,
+                ),
+            );
 
             tokio::pin!(install);
 
@@ -1524,26 +1690,24 @@ fn launch_subscription(
 
             let instance_id = instance.id.clone();
             let report_instance = instance.clone();
-            let mut command = match crate::instances::launch::prepare_launch_command(instance, session).await {
-                Ok((command, java_line)) => {
-                    let _ = output
-                        .send(Message::LaunchOutput {
-                            instance_id: instance_id.clone(),
-                            line: format!("java ready: {java_line}"),
-                        })
-                        .await;
-                    command
-                }
-                Err(error) => {
-                    let _ = output
-                        .send(Message::LaunchFailed {
-                            instance_id,
-                            error,
-                        })
-                        .await;
-                    return;
-                }
-            };
+            let mut command =
+                match crate::instances::launch::prepare_launch_command(instance, session).await {
+                    Ok((command, java_line)) => {
+                        let _ = output
+                            .send(Message::LaunchOutput {
+                                instance_id: instance_id.clone(),
+                                line: format!("java ready: {java_line}"),
+                            })
+                            .await;
+                        command
+                    }
+                    Err(error) => {
+                        let _ = output
+                            .send(Message::LaunchFailed { instance_id, error })
+                            .await;
+                        return;
+                    }
+                };
 
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
             let mut child = match command.spawn() {
@@ -1647,8 +1811,11 @@ fn launch_subscription(
     )
 }
 
-async fn forward_launch_lines<R>(reader: R, label: &'static str, tx: tokio::sync::mpsc::UnboundedSender<String>)
-where
+async fn forward_launch_lines<R>(
+    reader: R,
+    label: &'static str,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     let mut lines = BufReader::new(reader).lines();
@@ -1684,7 +1851,11 @@ async fn startup() -> Result<StartupData, AppError> {
         .map_err(|e| AppError::Storage(e.to_string()))?
         .as_secs();
     if let Some(stored) = session.clone() {
-        let should_refresh = stored.expired_or_stale(now) || matches!(stored.provider, AuthProvider::ElyBy | AuthProvider::LittleSkin);
+        let should_refresh = stored.expired_or_stale(now)
+            || matches!(
+                stored.provider,
+                AuthProvider::ElyBy | AuthProvider::LittleSkin
+            );
         if should_refresh {
             session = match crate::auth::refresh(&stored).await {
                 Ok(refreshed) => {

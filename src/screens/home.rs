@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, image, pick_list, progress_bar, row, scrollable, stack, text, text_input, Space};
+use iced::widget::{
+    button, column, container, image, pick_list, progress_bar, row, scrollable, stack, text,
+    text_input, Space,
+};
 use iced::{Alignment, Element, Length};
 
 use crate::auth::Session;
@@ -71,7 +74,11 @@ pub fn view<'a>(
     // Chrome removed.
 
     let nav = row![
-        column![text("Swift Launcher").size(18), text("Minecraft instances").size(11)].spacing(1),
+        column![
+            text("Swift Launcher").size(18),
+            text("Minecraft instances").size(11)
+        ]
+        .spacing(1),
         Space::with_width(Length::Fill),
         text_input("Search instances", search)
             .on_input(Message::SearchChanged)
@@ -79,18 +86,41 @@ pub fn view<'a>(
             .padding(9)
             .width(Length::FillPortion(2)),
         account_chip(session, avatar_cache, username),
-        icon_button(icons::SETTINGS, 18.0, Message::SettingsOpened, theme::secondary_button),
+        icon_button(
+            icons::SETTINGS,
+            18.0,
+            Message::SettingsOpened,
+            theme::secondary_button
+        ),
     ]
     .spacing(12)
     .align_y(Alignment::Center);
 
     let action = row![
-        icon_button(icons::ADD, 18.0, Message::NewInstance, theme::primary_button),
-        icon_button(icons::IMPORT, 18.0, Message::ImportInstance, theme::secondary_button),
-        Space::with_width(Length::Fill),
-        styled_pick_list([SortMode::Name, SortMode::LastPlayed, SortMode::Version], Some(sort), Message::SortChanged),
         icon_button(
-            if list_view { icons::GRID_VIEW } else { icons::LIST_VIEW },
+            icons::ADD,
+            18.0,
+            Message::NewInstance,
+            theme::primary_button
+        ),
+        icon_button(
+            icons::IMPORT,
+            18.0,
+            Message::ImportInstance,
+            theme::secondary_button
+        ),
+        Space::with_width(Length::Fill),
+        styled_pick_list(
+            [SortMode::Name, SortMode::LastPlayed, SortMode::Version],
+            Some(sort),
+            Message::SortChanged
+        ),
+        icon_button(
+            if list_view {
+                icons::GRID_VIEW
+            } else {
+                icons::LIST_VIEW
+            },
             18.0,
             Message::ToggleListView(!list_view),
             theme::secondary_button,
@@ -102,9 +132,17 @@ pub fn view<'a>(
     let filtered = filtered_instances(instances, search, sort);
     let columns = grid_columns(window_width, list_view);
     let grid: Element<'a, Message> = if instances.is_empty() {
-        empty_state("No instances yet", "Create your first Minecraft instance to get started.", true)
+        empty_state(
+            "No instances yet",
+            "Create your first Minecraft instance to get started.",
+            true,
+        )
     } else if filtered.is_empty() {
-        empty_state("No matches", "Try another search term or clear the search box.", false)
+        empty_state(
+            "No matches",
+            "Try another search term or clear the search box.",
+            false,
+        )
     } else {
         let mut rows = column![].spacing(14);
         for chunk in filtered.chunks(columns) {
@@ -131,9 +169,7 @@ pub fn view<'a>(
         content = content.push(account_switcher(accounts, session));
     }
 
-    let shell = container(content)
-        .width(Length::Fill)
-        .height(Length::Fill);
+    let shell = container(content).width(Length::Fill).height(Length::Fill);
 
     let mut base: Element<'a, Message> = container(shell)
         .width(Length::Fill)
@@ -142,10 +178,13 @@ pub fn view<'a>(
         .into();
 
     if settings_open {
-        base = stack![base, crate::screens::settings::view(settings, java_status, accounts, session)]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into();
+        base = stack![
+            base,
+            crate::screens::settings::view(settings, java_status, accounts, session)
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into();
     }
 
     if create_open || import_open {
@@ -166,10 +205,7 @@ pub fn view<'a>(
         } else {
             import_instance_overlay(import_path, import_busy)
         };
-        stack![
-            base,
-            overlay
-        ]
+        stack![base, overlay]
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
@@ -197,9 +233,12 @@ fn empty_state<'a>(title: &'a str, subtitle: &'a str, show_create: bool) -> Elem
     .spacing(14)
     .align_x(Alignment::Center);
     if show_create {
-        body = body.push(
-            icon_button(icons::ADD, 18.0, Message::NewInstance, theme::primary_button),
-        );
+        body = body.push(icon_button(
+            icons::ADD,
+            18.0,
+            Message::NewInstance,
+            theme::primary_button,
+        ));
     }
     container(body)
         .height(Length::Fill)
@@ -214,11 +253,15 @@ fn account_chip<'a>(
     username: &'a str,
 ) -> Element<'a, Message> {
     let avatar = session.and_then(|s| {
-        avatar_cache
-            .get(&s.uuid)
-            .map(|path| image(image::Handle::from_path(path)).width(28.0).height(28.0).into())
+        avatar_cache.get(&s.uuid).map(|path| {
+            image(image::Handle::from_path(path))
+                .width(28.0)
+                .height(28.0)
+                .into()
+        })
     });
-    let leading: Element<'a, Message> = avatar.unwrap_or_else(|| icons::avatar_placeholder(username, 36.0));
+    let leading: Element<'a, Message> =
+        avatar.unwrap_or_else(|| icons::avatar_placeholder(username, 36.0));
     button(
         row![leading, text(username).size(13)]
             .spacing(8)
@@ -235,7 +278,12 @@ fn error_row(error: &str) -> Element<'_, Message> {
         row![
             svg_icon(icons::ALERT, 18.0),
             text(error).size(13).width(Length::Fill),
-            icon_button(icons::CLOSE, 16.0, Message::ErrorDismissed, theme::danger_button),
+            icon_button(
+                icons::CLOSE,
+                16.0,
+                Message::ErrorDismissed,
+                theme::danger_button
+            ),
         ]
         .spacing(10)
         .align_y(Alignment::Center),
@@ -246,11 +294,11 @@ fn error_row(error: &str) -> Element<'_, Message> {
     .into()
 }
 
-fn account_switcher<'a>(accounts: &'a [Session], active: Option<&'a Session>) -> Element<'a, Message> {
-    let mut list = column![
-        text("Accounts").size(18),
-    ]
-    .spacing(10);
+fn account_switcher<'a>(
+    accounts: &'a [Session],
+    active: Option<&'a Session>,
+) -> Element<'a, Message> {
+    let mut list = column![text("Accounts").size(18),].spacing(10);
 
     if accounts.is_empty() {
         list = list.push(text("No saved accounts yet").size(13));
@@ -261,13 +309,22 @@ fn account_switcher<'a>(accounts: &'a [Session], active: Option<&'a Session>) ->
         list = list.push(
             row![
                 column![
-                    text(format!("{}{}", account.username, if is_active { " (active)" } else { "" })).size(14),
+                    text(format!(
+                        "{}{}",
+                        account.username,
+                        if is_active { " (active)" } else { "" }
+                    ))
+                    .size(14),
                     text(format!("{} • {}", account.provider, account.uuid)).size(11),
                 ]
                 .spacing(3),
                 Space::with_width(Length::Fill),
-                button("Use").on_press(Message::AccountSelected(account.uuid.clone())).style(theme::secondary_button),
-                button("Sign out").on_press(Message::SignOut(account.uuid.clone())).style(theme::danger_button),
+                button("Use")
+                    .on_press(Message::AccountSelected(account.uuid.clone()))
+                    .style(theme::secondary_button),
+                button("Sign out")
+                    .on_press(Message::SignOut(account.uuid.clone()))
+                    .style(theme::danger_button),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -281,14 +338,25 @@ fn account_switcher<'a>(accounts: &'a [Session], active: Option<&'a Session>) ->
         .into()
 }
 
-fn filtered_instances<'a>(instances: &'a [Instance], search: &str, sort: SortMode) -> Vec<&'a Instance> {
+fn filtered_instances<'a>(
+    instances: &'a [Instance],
+    search: &str,
+    sort: SortMode,
+) -> Vec<&'a Instance> {
     let mut filtered: Vec<_> = instances
         .iter()
-        .filter(|instance| instance.name.to_lowercase().contains(&search.to_lowercase()))
+        .filter(|instance| {
+            instance
+                .name
+                .to_lowercase()
+                .contains(&search.to_lowercase())
+        })
         .collect();
     match sort {
         SortMode::Name => filtered.sort_by(|a, b| a.name.cmp(&b.name)),
-        SortMode::LastPlayed => filtered.sort_by(|a, b| b.last_played_unix.cmp(&a.last_played_unix)),
+        SortMode::LastPlayed => {
+            filtered.sort_by(|a, b| b.last_played_unix.cmp(&a.last_played_unix))
+        }
         SortMode::Version => filtered.sort_by(|a, b| a.minecraft_version.cmp(&b.minecraft_version)),
     }
     filtered
@@ -323,7 +391,12 @@ fn card(instance: &Instance, list_view: bool, _columns: usize) -> Element<'_, Me
                 card_artwork(instance, 40.0),
                 column![
                     text(&instance.name).size(14),
-                    text(format!("{} • {}", instance.minecraft_version, loader_label(instance.loader))).size(11),
+                    text(format!(
+                        "{} • {}",
+                        instance.minecraft_version,
+                        loader_label(instance.loader)
+                    ))
+                    .size(11),
                     run_state_label(instance.run_state),
                 ]
                 .spacing(2)
@@ -487,27 +560,45 @@ fn create_instance_overlay<'a>(
     paused: bool,
 ) -> Element<'a, Message> {
     let version_pick = if versions.is_empty() {
-        styled_pick_list(Vec::<String>::new(), None::<String>, Message::CreateInstanceVersionChanged)
-            .placeholder("Loading versions...")
-            .width(Length::Fill)
+        styled_pick_list(
+            Vec::<String>::new(),
+            None::<String>,
+            Message::CreateInstanceVersionChanged,
+        )
+        .placeholder("Loading versions...")
+        .width(Length::Fill)
     } else {
-        styled_pick_list(versions.to_vec(), Some(selected_version.to_string()), Message::CreateInstanceVersionChanged)
-            .placeholder("Minecraft version")
-            .width(Length::Fill)
+        styled_pick_list(
+            versions.to_vec(),
+            Some(selected_version.to_string()),
+            Message::CreateInstanceVersionChanged,
+        )
+        .placeholder("Minecraft version")
+        .width(Length::Fill)
     };
 
     let loader_version_pick: Element<'a, Message> = if loader == LoaderKind::Vanilla {
-        text("Vanilla uses the selected Minecraft version directly.").size(12).into()
+        text("Vanilla uses the selected Minecraft version directly.")
+            .size(12)
+            .into()
     } else if loader_versions_busy {
-        styled_pick_list(Vec::<String>::new(), None::<String>, Message::CreateInstanceLoaderVersionChanged)
-            .placeholder("Loading loader versions...")
-            .width(Length::Fill)
-            .into()
+        styled_pick_list(
+            Vec::<String>::new(),
+            None::<String>,
+            Message::CreateInstanceLoaderVersionChanged,
+        )
+        .placeholder("Loading loader versions...")
+        .width(Length::Fill)
+        .into()
     } else if loader_versions.is_empty() {
-        styled_pick_list(Vec::<String>::new(), None::<String>, Message::CreateInstanceLoaderVersionChanged)
-            .placeholder("No loader versions loaded")
-            .width(Length::Fill)
-            .into()
+        styled_pick_list(
+            Vec::<String>::new(),
+            None::<String>,
+            Message::CreateInstanceLoaderVersionChanged,
+        )
+        .placeholder("No loader versions loaded")
+        .width(Length::Fill)
+        .into()
     } else {
         styled_pick_list(
             loader_versions.to_vec(),
@@ -521,8 +612,9 @@ fn create_instance_overlay<'a>(
 
     let loader_ready = match loader {
         LoaderKind::Vanilla => true,
-        LoaderKind::Fabric | LoaderKind::Quilt => !loader_versions_busy && !loader_versions.is_empty(),
-        LoaderKind::Forge | LoaderKind::NeoForge => false,
+        LoaderKind::Fabric | LoaderKind::Quilt | LoaderKind::Forge | LoaderKind::NeoForge => {
+            !loader_versions_busy && !loader_versions.is_empty()
+        }
     };
 
     let install_message = if busy || versions.is_empty() || !loader_ready {
@@ -530,8 +622,16 @@ fn create_instance_overlay<'a>(
     } else {
         Message::CreateInstanceSubmit
     };
-    let close_message = if busy { Message::Noop } else { Message::CreateInstanceCancel };
-    let pause_message = if paused { Message::CreateInstallResume } else { Message::CreateInstallPause };
+    let close_message = if busy {
+        Message::Noop
+    } else {
+        Message::CreateInstanceCancel
+    };
+    let pause_message = if paused {
+        Message::CreateInstallResume
+    } else {
+        Message::CreateInstallPause
+    };
 
     let dialog = container(
         column![
@@ -542,15 +642,27 @@ fn create_instance_overlay<'a>(
                 ]
                 .spacing(4),
                 Space::with_width(Length::Fill),
-                button("Cancel")
-                    .on_press(close_message.clone())
-                    .style(theme::secondary_button),
+                icon_button(
+                    icons::CLOSE,
+                    18.0,
+                    close_message.clone(),
+                    theme::secondary_button
+                ),
             ]
             .align_y(Alignment::Center),
-            text_input("Instance name", name).on_input(Message::CreateInstanceNameChanged).style(theme::input).padding(12),
+            text_input("Instance name", name)
+                .on_input(Message::CreateInstanceNameChanged)
+                .style(theme::input)
+                .padding(12),
             version_pick,
             styled_pick_list(
-                [LoaderKind::Vanilla, LoaderKind::Fabric, LoaderKind::Quilt],
+                [
+                    LoaderKind::Vanilla,
+                    LoaderKind::Fabric,
+                    LoaderKind::Forge,
+                    LoaderKind::NeoForge,
+                    LoaderKind::Quilt,
+                ],
                 Some(loader),
                 Message::CreateInstanceLoaderChanged,
             )
@@ -558,16 +670,24 @@ fn create_instance_overlay<'a>(
             .width(Length::Fill),
             loader_version_pick,
             text(status).size(13),
-            progress_bar(0.0..=1.0, progress).style(theme::progress).width(Length::Fill),
+            progress_bar(0.0..=1.0, progress)
+                .style(theme::progress)
+                .width(Length::Fill),
             row![
                 button(if busy { "Abort" } else { "Cancel" })
-                    .on_press(if busy { Message::CreateInstallCancel } else { close_message })
+                    .on_press(if busy {
+                        Message::CreateInstallCancel
+                    } else {
+                        close_message
+                    })
                     .style(theme::secondary_button),
                 button(if paused { "Resume" } else { "Pause" })
                     .on_press(if busy { pause_message } else { Message::Noop })
                     .style(theme::secondary_button),
                 Space::with_width(Length::Fill),
-                button(if busy { "Installing..." } else { "Install" }).on_press(install_message).style(theme::primary_button),
+                button(if busy { "Installing..." } else { "Install" })
+                    .on_press(install_message)
+                    .style(theme::primary_button),
             ]
             .align_y(Alignment::Center),
         ]
@@ -587,8 +707,16 @@ fn create_instance_overlay<'a>(
 }
 
 fn import_instance_overlay(path: &str, busy: bool) -> Element<'_, Message> {
-    let close_message = if busy { Message::Noop } else { Message::ImportInstanceCancel };
-    let import_message = if busy { Message::Noop } else { Message::ImportInstanceSubmit };
+    let close_message = if busy {
+        Message::Noop
+    } else {
+        Message::ImportInstanceCancel
+    };
+    let import_message = if busy {
+        Message::Noop
+    } else {
+        Message::ImportInstanceSubmit
+    };
     let dialog = container(
         column![
             row![
@@ -598,9 +726,12 @@ fn import_instance_overlay(path: &str, busy: bool) -> Element<'_, Message> {
                 ]
                 .spacing(4),
                 Space::with_width(Length::Fill),
-                button("Cancel")
-                    .on_press(close_message.clone())
-                    .style(theme::secondary_button),
+                icon_button(
+                    icons::CLOSE,
+                    18.0,
+                    close_message.clone(),
+                    theme::secondary_button
+                ),
             ]
             .align_y(Alignment::Center),
             text_input("/path/to/instance.zip", path)
@@ -608,10 +739,20 @@ fn import_instance_overlay(path: &str, busy: bool) -> Element<'_, Message> {
                 .style(theme::input)
                 .padding(12),
             row![
-                button("Cancel").on_press(close_message).style(theme::secondary_button),
-                button("Choose").on_press(if busy { Message::Noop } else { Message::PickImportZip }).style(theme::secondary_button),
+                button("Cancel")
+                    .on_press(close_message)
+                    .style(theme::secondary_button),
+                button("Choose")
+                    .on_press(if busy {
+                        Message::Noop
+                    } else {
+                        Message::PickImportZip
+                    })
+                    .style(theme::secondary_button),
                 Space::with_width(Length::Fill),
-                button(if busy { "Importing..." } else { "Import" }).on_press(import_message).style(theme::primary_button),
+                button(if busy { "Importing..." } else { "Import" })
+                    .on_press(import_message)
+                    .style(theme::primary_button),
             ]
             .align_y(Alignment::Center),
         ]

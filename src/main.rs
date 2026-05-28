@@ -18,7 +18,8 @@ use iced::{window, Size};
 use tracing_subscriber::EnvFilter;
 
 fn main() -> iced::Result {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("swift_launcher=info,warn"));
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("swift_launcher=info,warn"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     iced::application("Swift Launcher", SwiftLauncher::update, SwiftLauncher::view)

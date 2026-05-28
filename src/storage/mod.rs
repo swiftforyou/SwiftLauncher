@@ -26,7 +26,9 @@ impl SledStore {
 
     pub fn open_at(path: PathBuf) -> Result<Self, AppError> {
         std::fs::create_dir_all(&path).map_err(|e| AppError::Storage(e.to_string()))?;
-        Ok(Self { db: sled::open(path)? })
+        Ok(Self {
+            db: sled::open(path)?,
+        })
     }
 
     pub fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, AppError> {
@@ -58,12 +60,19 @@ impl SledStore {
         Ok(out)
     }
 
-    pub fn scan_prefix_excluding<T: DeserializeOwned>(&self, prefix: &str, excluded_keys: &[&str]) -> Result<Vec<T>, AppError> {
+    pub fn scan_prefix_excluding<T: DeserializeOwned>(
+        &self,
+        prefix: &str,
+        excluded_keys: &[&str],
+    ) -> Result<Vec<T>, AppError> {
         let mut out = Vec::new();
         for item in self.db.scan_prefix(prefix) {
             let (key, value) = item?;
             let key = String::from_utf8_lossy(&key);
-            if excluded_keys.iter().any(|excluded| key.as_ref() == *excluded) {
+            if excluded_keys
+                .iter()
+                .any(|excluded| key.as_ref() == *excluded)
+            {
                 continue;
             }
             out.push(serde_json::from_slice(&value)?);
@@ -106,7 +115,9 @@ pub fn data_dir() -> Result<PathBuf, AppError> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share")));
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share"))
+        });
 
     base.map(|path| path.join("swift-launcher"))
         .ok_or_else(|| AppError::Storage("could not resolve platform data directory".into()))

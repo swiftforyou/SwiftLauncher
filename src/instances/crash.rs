@@ -16,7 +16,10 @@ pub async fn write_launch_crash_report(
         .duration_since(UNIX_EPOCH)
         .map_err(|error| AppError::Process(error.to_string()))?
         .as_secs();
-    let file_name = format!("swift-launcher-{}-{timestamp}.log", sanitize_file_part(&instance.name));
+    let file_name = format!(
+        "swift-launcher-{}-{timestamp}.log",
+        sanitize_file_part(&instance.name)
+    );
     let path = dir.join(file_name);
 
     let mut body = String::new();

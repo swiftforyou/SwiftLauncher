@@ -16,7 +16,12 @@ pub enum ModrinthKind {
 }
 
 impl ModrinthKind {
-    pub const ALL: [Self; 4] = [Self::Mods, Self::Modpacks, Self::ResourcePacks, Self::Shaders];
+    pub const ALL: [Self; 4] = [
+        Self::Mods,
+        Self::Modpacks,
+        Self::ResourcePacks,
+        Self::Shaders,
+    ];
 
     fn project_type(self) -> &'static str {
         match self {
@@ -85,7 +90,10 @@ pub async fn list_mods(instance_path: &Path) -> Result<Vec<InstalledMod>, AppErr
         if name.ends_with(".jar") || name.ends_with(".jar.disabled") {
             mods.push(InstalledMod {
                 id: name.to_string(),
-                name: name.trim_end_matches(".disabled").trim_end_matches(".jar").to_string(),
+                name: name
+                    .trim_end_matches(".disabled")
+                    .trim_end_matches(".jar")
+                    .to_string(),
                 version: "local".into(),
                 enabled: name.ends_with(".jar"),
             });
@@ -95,7 +103,11 @@ pub async fn list_mods(instance_path: &Path) -> Result<Vec<InstalledMod>, AppErr
     Ok(mods)
 }
 
-pub async fn set_mod_enabled(instance_path: PathBuf, mod_id: String, enabled: bool) -> Result<Vec<InstalledMod>, AppError> {
+pub async fn set_mod_enabled(
+    instance_path: PathBuf,
+    mod_id: String,
+    enabled: bool,
+) -> Result<Vec<InstalledMod>, AppError> {
     let mods_dir = instance_path.join("mods");
     let source = mod_path(&mods_dir, &mod_id)?;
     let file_name = source
@@ -116,33 +128,46 @@ pub async fn set_mod_enabled(instance_path: PathBuf, mod_id: String, enabled: bo
 
     if source != target {
         if tokio::fs::metadata(&target).await.is_ok() {
-            return Err(AppError::Instance(format!("target mod file already exists: {}", target.display())));
+            return Err(AppError::Instance(format!(
+                "target mod file already exists: {}",
+                target.display()
+            )));
         }
         tokio::fs::rename(source, target).await?;
     }
     list_mods(&instance_path).await
 }
 
-pub async fn delete_mod(instance_path: PathBuf, mod_id: String) -> Result<Vec<InstalledMod>, AppError> {
+pub async fn delete_mod(
+    instance_path: PathBuf,
+    mod_id: String,
+) -> Result<Vec<InstalledMod>, AppError> {
     let mods_dir = instance_path.join("mods");
     let path = mod_path(&mods_dir, &mod_id)?;
     tokio::fs::remove_file(path).await?;
     list_mods(&instance_path).await
 }
 
-pub async fn import_mod(instance_path: PathBuf, source: PathBuf) -> Result<Vec<InstalledMod>, AppError> {
+pub async fn import_mod(
+    instance_path: PathBuf,
+    source: PathBuf,
+) -> Result<Vec<InstalledMod>, AppError> {
     let file_name = source
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| AppError::Instance("invalid source mod file name".into()))?;
     if !file_name.ends_with(".jar") {
-        return Err(AppError::Instance("mod import only accepts .jar files".into()));
+        return Err(AppError::Instance(
+            "mod import only accepts .jar files".into(),
+        ));
     }
     let mods_dir = instance_path.join("mods");
     tokio::fs::create_dir_all(&mods_dir).await?;
     let target = mods_dir.join(file_name);
     if tokio::fs::metadata(&target).await.is_ok() {
-        return Err(AppError::Instance(format!("mod already exists: {file_name}")));
+        return Err(AppError::Instance(format!(
+            "mod already exists: {file_name}"
+        )));
     }
     tokio::fs::copy(source, target).await?;
     list_mods(&instance_path).await
@@ -161,9 +186,15 @@ pub async fn search_modrinth(
     let loader = modrinth_loader(loader).ok();
     let facets = match (kind, loader) {
         (ModrinthKind::Mods | ModrinthKind::Modpacks, Some(loader)) => {
-            format!(r#"[["project_type:{}"],["versions:{minecraft_version}"],["categories:{loader}"]]"#, kind.project_type())
+            format!(
+                r#"[["project_type:{}"],["versions:{minecraft_version}"],["categories:{loader}"]]"#,
+                kind.project_type()
+            )
         }
-        _ => format!(r#"[["project_type:{}"],["versions:{minecraft_version}"]]"#, kind.project_type()),
+        _ => format!(
+            r#"[["project_type:{}"],["versions:{minecraft_version}"]]"#,
+            kind.project_type()
+        ),
     };
     let base = modrinth_base_url();
     let url = format!(
@@ -198,7 +229,10 @@ pub async fn search_modrinth(
     Ok(projects)
 }
 
-pub async fn modrinth_project_detail(project_id: String, kind: ModrinthKind) -> Result<ModrinthProjectDetail, AppError> {
+pub async fn modrinth_project_detail(
+    project_id: String,
+    kind: ModrinthKind,
+) -> Result<ModrinthProjectDetail, AppError> {
     let client = modrinth_client();
     let base = modrinth_base_url();
     let project = client
@@ -231,23 +265,43 @@ pub async fn modrinth_project_detail(project_id: String, kind: ModrinthKind) -> 
 }
 
 pub async fn install_modrinth_project(
+    kind: ModrinthKind,
     instance_path: PathBuf,
     minecraft_version: String,
     loader: LoaderKind,
     project_id: String,
 ) -> Result<Vec<InstalledMod>, AppError> {
-    let loader = modrinth_loader(loader)?;
+    if kind == ModrinthKind::Modpacks {
+        return Err(AppError::Instance(
+            "Modpack install needs mrpack unpacking and override merge support first".into(),
+        ));
+    }
+    let loader = if kind == ModrinthKind::Mods {
+        Some(modrinth_loader(loader)?)
+    } else {
+        None
+    };
     let mut visited = BTreeSet::new();
     let mut jobs = Vec::new();
-    collect_modrinth_jobs(&project_id, &minecraft_version, loader, &instance_path, &mut visited, &mut jobs).await?;
+    collect_modrinth_jobs(
+        kind,
+        &project_id,
+        &minecraft_version,
+        loader,
+        &instance_path,
+        &mut visited,
+        &mut jobs,
+    )
+    .await?;
     download_jobs_checked(jobs).await?;
     list_mods(&instance_path).await
 }
 
 async fn collect_modrinth_jobs(
+    kind: ModrinthKind,
     project_id: &str,
     minecraft_version: &str,
-    loader: &str,
+    loader: Option<&str>,
     instance_path: &Path,
     visited: &mut BTreeSet<String>,
     jobs: &mut Vec<DownloadJob>,
@@ -267,12 +321,17 @@ async fn collect_modrinth_jobs(
                 }
             }
         }
-        let file = primary_file(version.files)
-            .ok_or_else(|| AppError::Download(format!("Modrinth project {project_id} has no downloadable files")))?;
+        let file = primary_file(version.files).ok_or_else(|| {
+            AppError::Download(format!(
+                "Modrinth project {project_id} has no downloadable files"
+            ))
+        })?;
         jobs.push(DownloadJob {
             id: format!("modrinth:{project_id}:{}", file.filename),
             url: file.url,
-            destination_path: instance_path.join("mods").join(&file.filename),
+            destination_path: instance_path
+                .join(modrinth_install_dir(kind))
+                .join(&file.filename),
             expected_sha1: file.hashes.sha1,
             size_bytes: file.size,
         });
@@ -280,14 +339,26 @@ async fn collect_modrinth_jobs(
     Ok(())
 }
 
-async fn compatible_modrinth_version(project_id: &str, minecraft_version: &str, loader: &str) -> Result<ModrinthVersion, AppError> {
+async fn compatible_modrinth_version(
+    project_id: &str,
+    minecraft_version: &str,
+    loader: Option<&str>,
+) -> Result<ModrinthVersion, AppError> {
     let base = modrinth_base_url();
-    let url = format!(
-        "{base}/v2/project/{}/version?loaders={}&game_versions={}",
-        url_encode(project_id),
-        url_encode(&format!(r#"["{loader}"]"#)),
-        url_encode(&format!(r#"["{minecraft_version}"]"#)),
-    );
+    let url = if let Some(loader) = loader {
+        format!(
+            "{base}/v2/project/{}/version?loaders={}&game_versions={}",
+            url_encode(project_id),
+            url_encode(&format!(r#"["{loader}"]"#)),
+            url_encode(&format!(r#"["{minecraft_version}"]"#)),
+        )
+    } else {
+        format!(
+            "{base}/v2/project/{}/version?game_versions={}",
+            url_encode(project_id),
+            url_encode(&format!(r#"["{minecraft_version}"]"#)),
+        )
+    };
     modrinth_client()
         .get(url)
         .send()
@@ -297,7 +368,20 @@ async fn compatible_modrinth_version(project_id: &str, minecraft_version: &str, 
         .await?
         .into_iter()
         .next()
-        .ok_or_else(|| AppError::Download(format!("no compatible Modrinth version found for {project_id}")))
+        .ok_or_else(|| {
+            AppError::Download(format!(
+                "no compatible Modrinth version found for {project_id}"
+            ))
+        })
+}
+
+fn modrinth_install_dir(kind: ModrinthKind) -> &'static str {
+    match kind {
+        ModrinthKind::Mods => "mods",
+        ModrinthKind::ResourcePacks => "resourcepacks",
+        ModrinthKind::Shaders => "shaderpacks",
+        ModrinthKind::Modpacks => "modpacks",
+    }
 }
 
 fn primary_file(files: Vec<ModrinthFile>) -> Option<ModrinthFile> {
@@ -310,7 +394,9 @@ fn mod_path(mods_dir: &Path, mod_id: &str) -> Result<PathBuf, AppError> {
         return Err(AppError::Instance("invalid mod id".into()));
     }
     if !(mod_id.ends_with(".jar") || mod_id.ends_with(".jar.disabled")) {
-        return Err(AppError::Instance("mod file must be .jar or .jar.disabled".into()));
+        return Err(AppError::Instance(
+            "mod file must be .jar or .jar.disabled".into(),
+        ));
     }
     Ok(mods_dir.join(mod_id))
 }
@@ -381,7 +467,9 @@ fn modrinth_loader(loader: LoaderKind) -> Result<&'static str, AppError> {
         LoaderKind::Quilt => Ok("quilt"),
         LoaderKind::Forge => Ok("forge"),
         LoaderKind::NeoForge => Ok("neoforge"),
-        LoaderKind::Vanilla => Err(AppError::Instance("Modrinth mod install needs a mod loader instance".into())),
+        LoaderKind::Vanilla => Err(AppError::Instance(
+            "Modrinth mod install needs a mod loader instance".into(),
+        )),
     }
 }
 
@@ -415,7 +503,9 @@ fn url_encode(input: &str) -> String {
     let mut out = String::new();
     for byte in input.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
             b' ' => out.push_str("%20"),
             _ => {
                 use std::fmt::Write;
@@ -437,7 +527,9 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    async fn spawn_test_server(routes: HashMap<String, Vec<u8>>) -> (String, tokio::task::JoinHandle<()>) {
+    async fn spawn_test_server(
+        routes: HashMap<String, Vec<u8>>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let routes = Arc::new(routes);
@@ -462,10 +554,8 @@ mod tests {
                     .unwrap_or("/");
                 let path = path.split('?').next().unwrap_or("/");
                 if let Some(body) = routes.get(path) {
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
-                        body.len()
-                    );
+                    let response =
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
                     let _ = socket.write_all(response.as_bytes()).await;
                     let _ = socket.write_all(body).await;
                 } else {
@@ -478,7 +568,10 @@ mod tests {
     }
 
     fn temp_dir(prefix: &str) -> PathBuf {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let pid = std::process::id();
         let dir = std::env::temp_dir().join(format!("swift-launcher-test-{prefix}-{pid}-{now}"));
         std::fs::create_dir_all(&dir).unwrap();
@@ -518,9 +611,18 @@ mod tests {
         ]);
 
         let mut routes = HashMap::new();
-        routes.insert("/v2/project/root/version".to_string(), root_json.to_string().into_bytes());
-        routes.insert("/v2/project/lib-a/version".to_string(), lib_a_json.to_string().into_bytes());
-        routes.insert("/v2/project/lib-b/version".to_string(), lib_b_json.to_string().into_bytes());
+        routes.insert(
+            "/v2/project/root/version".to_string(),
+            root_json.to_string().into_bytes(),
+        );
+        routes.insert(
+            "/v2/project/lib-a/version".to_string(),
+            lib_a_json.to_string().into_bytes(),
+        );
+        routes.insert(
+            "/v2/project/lib-b/version".to_string(),
+            lib_b_json.to_string().into_bytes(),
+        );
 
         let (base, handle) = spawn_test_server(routes).await;
         std::env::set_var("SWIFT_LAUNCHER_MODRINTH_BASE", &base);
@@ -530,9 +632,10 @@ mod tests {
         let mut jobs = Vec::new();
 
         let result = collect_modrinth_jobs(
+            ModrinthKind::Mods,
             "root",
             "1.20.1",
-            "fabric",
+            Some("fabric"),
             &instance_path,
             &mut visited,
             &mut jobs,

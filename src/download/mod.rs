@@ -68,7 +68,12 @@ impl DownloadManager {
     ) -> Result<(), AppError> {
         let mut handles = Vec::new();
         for job in jobs {
-            let permit = self.limit.clone().acquire_owned().await.map_err(|e| AppError::Download(e.to_string()))?;
+            let permit = self
+                .limit
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|e| AppError::Download(e.to_string()))?;
             let client = self.client.clone();
             let tx = tx.clone();
             let control = control.clone();
@@ -87,7 +92,9 @@ impl DownloadManager {
             }));
         }
         for handle in handles {
-            handle.await.map_err(|e| AppError::Download(e.to_string()))?;
+            handle
+                .await
+                .map_err(|e| AppError::Download(e.to_string()))?;
         }
         Ok(())
     }
@@ -102,7 +109,8 @@ pub async fn download_jobs_checked_with_progress(
     progress_tx: Option<mpsc::UnboundedSender<(usize, usize)>>,
 ) -> Result<(), AppError> {
     let (control_tx, control_rx) = watch::channel(DownloadControl::Run);
-    let result = download_jobs_checked_with_progress_and_control(jobs, progress_tx, control_rx).await;
+    let result =
+        download_jobs_checked_with_progress_and_control(jobs, progress_tx, control_rx).await;
     drop(control_tx);
     result
 }
@@ -115,9 +123,7 @@ pub async fn download_jobs_checked_with_progress_and_control(
     let client = reqwest::Client::new();
     let limit = Arc::new(Semaphore::new(16));
     let (event_tx, mut event_rx) = mpsc::channel::<DownloadEvent>(1024);
-    let drain = tokio::spawn(async move {
-        while event_rx.recv().await.is_some() {}
-    });
+    let drain = tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
 
     let total = jobs.len();
     let mut completed = 0usize;
@@ -132,7 +138,11 @@ pub async fn download_jobs_checked_with_progress_and_control(
         }
 
         let job = job.clone();
-        let permit = limit.clone().acquire_owned().await.map_err(|e| AppError::Download(e.to_string()))?;
+        let permit = limit
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| AppError::Download(e.to_string()))?;
         let client = client.clone();
         let tx = event_tx.clone();
         let control = control_rx.clone();
@@ -152,7 +162,10 @@ pub async fn download_jobs_checked_with_progress_and_control(
 
     let mut first_error = None;
     for handle in handles {
-        match handle.await.map_err(|e| AppError::Download(e.to_string()))? {
+        match handle
+            .await
+            .map_err(|e| AppError::Download(e.to_string()))?
+        {
             Ok(()) => {
                 completed += 1;
                 if let Some(tx) = &progress_tx {
@@ -226,7 +239,8 @@ async fn download_one(
         match download_one_attempt(&client, &job, &temp_path, &tx, &mut control).await {
             Ok(()) => return Ok(()),
             Err(error) => {
-                if matches!(error, AppError::Download(ref reason) if reason == "download cancelled") {
+                if matches!(error, AppError::Download(ref reason) if reason == "download cancelled")
+                {
                     cleanup_job_files(&job).await;
                     return Err(error);
                 }
@@ -249,7 +263,11 @@ async fn download_one_attempt(
     tx: &mpsc::Sender<DownloadEvent>,
     control: &mut watch::Receiver<DownloadControl>,
 ) -> Result<(), AppError> {
-    let existing = tokio::fs::metadata(temp_path).await.ok().map(|meta| meta.len()).unwrap_or(0);
+    let existing = tokio::fs::metadata(temp_path)
+        .await
+        .ok()
+        .map(|meta| meta.len())
+        .unwrap_or(0);
     let mut request = client.get(&job.url);
     if existing > 0 {
         request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
@@ -271,7 +289,10 @@ async fn download_one_attempt(
     }
 
     let mut file = if existing > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-        let mut file = tokio::fs::OpenOptions::new().append(true).open(temp_path).await?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(temp_path)
+            .await?;
         file.seek(std::io::SeekFrom::End(0)).await?;
         file
     } else {
@@ -294,7 +315,10 @@ async fn download_one_attempt(
                 return Err(AppError::Download("download cancelled".into()));
             }
             DownloadControl::Pause => {
-                control.changed().await.map_err(|e| AppError::Download(e.to_string()))?;
+                control
+                    .changed()
+                    .await
+                    .map_err(|e| AppError::Download(e.to_string()))?;
                 continue;
             }
             DownloadControl::Run => {}
@@ -314,7 +338,11 @@ async fn download_one_attempt(
         let _ = tx.send(DownloadEvent::Progress(progress)).await;
         if last_tick.elapsed() >= Duration::from_millis(500) {
             let speed = bytes_since_tick * 1000 / last_tick.elapsed().as_millis().max(1) as u64;
-            let _ = tx.send(DownloadEvent::Speed { bytes_per_second: speed }).await;
+            let _ = tx
+                .send(DownloadEvent::Speed {
+                    bytes_per_second: speed,
+                })
+                .await;
             last_tick = Instant::now();
             bytes_since_tick = 0;
         }
@@ -326,13 +354,19 @@ async fn download_one_attempt(
         let actual = assets::sha1_file(temp_path).await?;
         if actual != *expected {
             let _ = tokio::fs::remove_file(temp_path).await;
-            return Err(AppError::Download(format!("sha1 mismatch: expected {expected}, got {actual}")));
+            return Err(AppError::Download(format!(
+                "sha1 mismatch: expected {expected}, got {actual}"
+            )));
         }
     }
 
     let _ = tokio::fs::remove_file(&job.destination_path).await;
     tokio::fs::rename(temp_path, &job.destination_path).await?;
-    let _ = tx.send(DownloadEvent::Complete { job_id: job.id.clone() }).await;
+    let _ = tx
+        .send(DownloadEvent::Complete {
+            job_id: job.id.clone(),
+        })
+        .await;
     Ok(())
 }
 
@@ -346,7 +380,9 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    async fn spawn_test_server(routes: HashMap<String, Vec<u8>>) -> (String, tokio::task::JoinHandle<()>) {
+    async fn spawn_test_server(
+        routes: HashMap<String, Vec<u8>>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let routes = Arc::new(routes);
@@ -371,10 +407,8 @@ mod tests {
                     .unwrap_or("/");
                 let path = path.split('?').next().unwrap_or("/");
                 if let Some(body) = routes.get(path) {
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
-                        body.len()
-                    );
+                    let response =
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
                     let _ = socket.write_all(response.as_bytes()).await;
                     let _ = socket.write_all(body).await;
                 } else {
@@ -387,7 +421,10 @@ mod tests {
     }
 
     fn temp_dir(prefix: &str) -> PathBuf {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let pid = std::process::id();
         let dir = std::env::temp_dir().join(format!("swift-launcher-test-{prefix}-{pid}-{now}"));
         std::fs::create_dir_all(&dir).unwrap();

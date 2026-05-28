@@ -17,7 +17,10 @@ pub fn latest_screenshot(instance_path: &Path) -> Option<PathBuf> {
             if path.extension().and_then(|ext| ext.to_str()) != Some("png") {
                 continue;
             }
-            let modified = entry.metadata().ok().and_then(|meta| meta.modified().ok())?;
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|meta| meta.modified().ok())?;
             if newest.as_ref().is_none_or(|(time, _)| modified > *time) {
                 newest = Some((modified, path));
             }

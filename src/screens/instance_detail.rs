@@ -1,7 +1,10 @@
-use iced::widget::{button, checkbox, column, container, image, row, scrollable, slider, text, text_input, Space};
-use iced::{Alignment, Element, Length};
+use iced::widget::{
+    button, checkbox, column, container, image, rich_text, row, scrollable, slider, span, text,
+    text_input, Space,
+};
+use iced::{font, Alignment, Element, Font, Length};
 
-use crate::icons::{self, icon_button, svg_icon};
+use crate::icons::{self, icon_button, icon_label_button, svg_icon};
 use crate::instances::mods::{InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail};
 use crate::instances::{Instance, InstanceRunState, InstanceTab};
 use crate::messages::Message;
@@ -30,7 +33,11 @@ pub fn view<'a>(
             .on_input(Message::InstanceNameChanged)
             .style(theme::input)
             .padding(10),
-        text(format!("Minecraft {} • {}", instance.minecraft_version, instance.loader)).size(13),
+        text(format!(
+            "Minecraft {} • {}",
+            instance.minecraft_version, instance.loader
+        ))
+        .size(13),
     ]
     .spacing(8);
     if let Some(status) = launch_status {
@@ -40,7 +47,12 @@ pub fn view<'a>(
     let header = row![
         header_meta,
         Space::with_width(Length::Fill),
-        icon_button(icons::CLOSE, 18.0, Message::CloseInstanceDetail, theme::secondary_button),
+        icon_button(
+            icons::CLOSE,
+            18.0,
+            Message::CloseInstanceDetail,
+            theme::secondary_button
+        ),
     ]
     .align_y(Alignment::Center);
 
@@ -72,14 +84,25 @@ pub fn view<'a>(
         InstanceTab::Logs => logs(launch_log, launch_status),
     };
 
-    container(column![header, tabs, body].spacing(14))
+    let body = container(body)
+        .height(Length::Fill)
+        .width(Length::Fill)
+        .clip(true);
+
+    container(column![header, tabs, body].spacing(14).height(Length::Fill))
         .padding(16)
         .style(theme::shell)
         .width(Length::Fill)
+        .height(Length::Fill)
+        .clip(true)
         .into()
 }
 
-fn tab_button(label: &'static str, target: InstanceTab, selected: InstanceTab) -> iced::widget::Button<'static, Message> {
+fn tab_button(
+    label: &'static str,
+    target: InstanceTab,
+    selected: InstanceTab,
+) -> iced::widget::Button<'static, Message> {
     let style = if target == selected {
         theme::primary_button
     } else {
@@ -91,18 +114,23 @@ fn tab_button(label: &'static str, target: InstanceTab, selected: InstanceTab) -
         .padding([8, 12])
 }
 
-fn overview<'a>(instance: &'a Instance, launch_log: &'a [String], launch_status: Option<&'a str>) -> Element<'a, Message> {
+fn overview<'a>(
+    instance: &'a Instance,
+    launch_log: &'a [String],
+    launch_status: Option<&'a str>,
+) -> Element<'a, Message> {
     let last_played = instance
         .last_played_unix
         .map(|v| v.to_string())
         .unwrap_or_else(|| "Never".into());
-    let state_label = launch_status
-        .map(str::to_string)
-        .unwrap_or_else(|| match instance.run_state {
-            InstanceRunState::Idle => "Idle".into(),
-            InstanceRunState::Preparing => "Launching".into(),
-            InstanceRunState::Running => "Running".into(),
-        });
+    let state_label =
+        launch_status
+            .map(str::to_string)
+            .unwrap_or_else(|| match instance.run_state {
+                InstanceRunState::Idle => "Idle".into(),
+                InstanceRunState::Preparing => "Launching".into(),
+                InstanceRunState::Running => "Running".into(),
+            });
     let log_preview = launch_log
         .iter()
         .rev()
@@ -122,7 +150,10 @@ fn overview<'a>(instance: &'a Instance, launch_log: &'a [String], launch_status:
     column![
         row![
             stat_card("Last played", last_played),
-            stat_card("Playtime", format!("{} min", instance.playtime_seconds / 60)),
+            stat_card(
+                "Playtime",
+                format!("{} min", instance.playtime_seconds / 60)
+            ),
             stat_card("State", state_label),
         ]
         .spacing(10),
@@ -191,16 +222,24 @@ fn mods<'a>(
         }
     }
 
-    column![
+    let content = column![
         modrinth_kind_selector(modrinth_kind),
         row![
             text_input("Search Modrinth", modrinth_query)
                 .on_input(Message::ModrinthSearchChanged)
                 .style(theme::input)
                 .padding(10),
-            button(if modrinth_busy { "Searching..." } else { "Search" })
-                .on_press(if modrinth_busy { Message::Noop } else { Message::SearchModrinth })
-                .style(theme::primary_button),
+            button(if modrinth_busy {
+                "Searching..."
+            } else {
+                "Search"
+            })
+            .on_press(if modrinth_busy {
+                Message::Noop
+            } else {
+                Message::SearchModrinth
+            })
+            .style(theme::primary_button),
         ]
         .spacing(8),
         modrinth_results_view(modrinth_results, modrinth_busy),
@@ -217,20 +256,35 @@ fn mods<'a>(
                 .on_input(Message::ModImportPathChanged)
                 .style(theme::input)
                 .padding(10),
-            icon_button(icons::FOLDER, 18.0, Message::PickModJar, theme::secondary_button),
-            button("Import").on_press(Message::ImportModSubmit).style(theme::secondary_button),
+            icon_button(
+                icons::FOLDER,
+                18.0,
+                Message::PickModJar,
+                theme::secondary_button
+            ),
+            button("Import")
+                .on_press(Message::ImportModSubmit)
+                .style(theme::secondary_button),
         ]
         .spacing(8),
-        scrollable(list).height(Length::Fixed(260.0)),
+        list,
     ]
-    .spacing(12)
-    .into()
+    .spacing(12);
+
+    scrollable(container(content).padding([0, 18]).width(Length::Fill))
+        .height(Length::Fill)
+        .width(Length::Fill)
+        .into()
 }
 
 fn modrinth_kind_selector(selected: ModrinthKind) -> Element<'static, Message> {
     let mut line = row![].spacing(8);
     for kind in ModrinthKind::ALL {
-        let style = if kind == selected { theme::primary_button } else { theme::secondary_button };
+        let style = if kind == selected {
+            theme::primary_button
+        } else {
+            theme::secondary_button
+        };
         line = line.push(
             button(text(kind.to_string()).size(12))
                 .on_press(Message::ModrinthKindSelected(kind))
@@ -243,12 +297,9 @@ fn modrinth_kind_selector(selected: ModrinthKind) -> Element<'static, Message> {
 
 fn loading_row(message: &str) -> Element<'_, Message> {
     container(
-        row![
-            svg_icon(icons::ALERT, 16.0),
-            text(message).size(13),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
+        row![svg_icon(icons::ALERT, 16.0), text(message).size(13),]
+            .spacing(8)
+            .align_y(Alignment::Center),
     )
     .padding(8)
     .style(theme::badge)
@@ -289,30 +340,34 @@ fn modrinth_results_view(results: &[ModrinthProject], busy: bool) -> Element<'_,
             );
         }
     }
-    scrollable(list).height(Length::Fixed(150.0)).into()
+    list.into()
 }
 
 fn modrinth_detail_view(detail: &ModrinthProjectDetail) -> Element<'_, Message> {
-    let mut body = column![
-        row![
-            project_icon(detail.icon.as_ref(), 58.0),
-            column![
-                text(&detail.title).size(20),
-                row![badge_text(detail.kind.to_string()), badge_text(format_downloads(detail.downloads))].spacing(6),
-                text(&detail.description).size(12),
+    let mut body = column![row![
+        project_icon(detail.icon.as_ref(), 58.0),
+        column![
+            text(&detail.title).size(20),
+            row![
+                badge_text(detail.kind.to_string()),
+                badge_text(format_downloads(detail.downloads))
             ]
-            .spacing(5),
-            Space::with_width(Length::Fill),
-            button("Back").on_press(Message::CloseModrinthProject).style(theme::secondary_button),
-            if detail.kind == ModrinthKind::Mods {
-                button("Install").on_press(Message::InstallModrinthProject(detail.project_id.clone())).style(theme::primary_button)
-            } else {
-                button("Install").style(theme::secondary_button)
-            },
+            .spacing(6),
+            text(&detail.description).size(12),
         ]
-        .spacing(12)
-        .align_y(Alignment::Center),
+        .spacing(5),
+        Space::with_width(Length::Fill),
+        icon_label_button(
+            icons::BACK,
+            16.0,
+            "Back",
+            Message::CloseModrinthProject,
+            theme::secondary_button
+        ),
+        install_resource_button(detail.project_id.clone()),
     ]
+    .spacing(12)
+    .align_y(Alignment::Center),]
     .spacing(12);
 
     if !detail.gallery.is_empty() {
@@ -329,31 +384,220 @@ fn modrinth_detail_view(detail: &ModrinthProjectDetail) -> Element<'_, Message> 
     }
 
     body = body.push(markdownish(&detail.body));
-    scrollable(body).height(Length::Fill).into()
+    scrollable(container(body).padding([0, 18]).width(Length::Fill))
+        .height(Length::Fill)
+        .into()
+}
+
+fn install_resource_button(project_id: String) -> iced::widget::Button<'static, Message> {
+    button(
+        row![
+            svg_icon(icons::DOWNLOAD, 16.0),
+            text("Install").size(13).color(theme::DARK.palette().crust),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .on_press(Message::InstallModrinthProject(project_id))
+    .style(theme::primary_button)
+    .padding([8, 12])
 }
 
 fn markdownish(markdown: &str) -> Element<'_, Message> {
     let mut col = column![].spacing(7);
     for raw in markdown.lines().take(260) {
-        let line = raw.trim();
+        let (line, centered) = normalize_markdown_line(raw);
+        let line = line.trim();
         if line.is_empty() {
             continue;
         }
         if let Some(text) = line.strip_prefix("# ") {
-            col = col.push(text_widget(text, 20));
+            col = col.push(markdown_line(text, 20, true, centered));
         } else if let Some(text) = line.strip_prefix("## ") {
-            col = col.push(text_widget(text, 17));
+            col = col.push(markdown_line(text, 17, true, centered));
         } else if let Some(text) = line.strip_prefix("### ") {
-            col = col.push(text_widget(text, 15));
+            col = col.push(markdown_line(text, 15, true, centered));
         } else if let Some(text) = line.strip_prefix("- ") {
-            col = col.push(text_widget(format!("• {text}"), 12));
-        } else if line.starts_with("![") {
-            col = col.push(text_widget("[image in gallery]", 11));
+            col = col.push(markdown_line(&format!("- {text}"), 12, false, centered));
+        } else if is_markdown_image_only(line) {
+            col = col.push(text_widget("Image shown in gallery", 11));
         } else {
-            col = col.push(text_widget(line.replace("**", ""), 12));
+            col = col.push(markdown_line(line, 12, false, centered));
         }
     }
     col.into()
+}
+
+fn markdown_line(raw: &str, size: u16, heading: bool, centered: bool) -> Element<'static, Message> {
+    let mut spans = inline_spans(raw, size);
+    if heading {
+        for item in &mut spans {
+            item.font = Some(Font {
+                weight: font::Weight::Semibold,
+                ..Font::DEFAULT
+            });
+        }
+    }
+    let line: Element<'static, Message> = rich_text(spans).size(size).into();
+    let mut boxed = container(line).width(Length::Fill);
+    if centered {
+        boxed = boxed.center_x(Length::Fill);
+    }
+    boxed.into()
+}
+
+fn inline_spans(input: &str, size: u16) -> Vec<iced::widget::text::Span<'static, Message, Font>> {
+    let clean = clean_markdown_text(&strip_inline_html(&flatten_markdown_links(input)));
+    let mut spans = Vec::new();
+    let mut buf = String::new();
+    let mut bold = false;
+    let mut italic = false;
+    let mut code = false;
+    let mut chars = clean.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '`' {
+            push_span(&mut spans, &mut buf, size, bold, italic, code);
+            code = !code;
+        } else if ch == '*' && chars.peek() == Some(&'*') {
+            let _ = chars.next();
+            push_span(&mut spans, &mut buf, size, bold, italic, code);
+            bold = !bold;
+        } else if ch == '*' {
+            push_span(&mut spans, &mut buf, size, bold, italic, code);
+            italic = !italic;
+        } else {
+            buf.push(ch);
+        }
+    }
+    push_span(&mut spans, &mut buf, size, bold, italic, code);
+    if spans.is_empty() {
+        spans.push(span(" "));
+    }
+    spans
+}
+
+fn is_markdown_image_only(input: &str) -> bool {
+    let trimmed = input.trim();
+    trimmed.starts_with("![") && trimmed.contains("](") && trimmed.ends_with(')')
+}
+
+fn flatten_markdown_links(input: &str) -> String {
+    let mut out = String::new();
+    let bytes = input.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let is_image = bytes[index] == b'!' && index + 1 < bytes.len() && bytes[index + 1] == b'[';
+        let is_link = bytes[index] == b'[';
+        if is_image || is_link {
+            let label_start = index + if is_image { 2 } else { 1 };
+            if let Some(label_end_rel) = input[label_start..].find(']') {
+                let label_end = label_start + label_end_rel;
+                let after_label = label_end + 1;
+                if input[after_label..].starts_with('(') {
+                    if let Some(url_end_rel) = input[after_label + 1..].find(')') {
+                        let label = &input[label_start..label_end];
+                        if is_image {
+                            if !label.trim().is_empty() {
+                                out.push_str(label.trim());
+                            } else {
+                                out.push_str("Image");
+                            }
+                        } else {
+                            out.push_str(label);
+                        }
+                        index = after_label + 1 + url_end_rel + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        let Some(ch) = input[index..].chars().next() else {
+            break;
+        };
+        out.push(ch);
+        index += ch.len_utf8();
+    }
+    out
+}
+
+fn push_span(
+    spans: &mut Vec<iced::widget::text::Span<'static, Message, Font>>,
+    buf: &mut String,
+    size: u16,
+    bold: bool,
+    italic: bool,
+    code: bool,
+) {
+    if buf.is_empty() {
+        return;
+    }
+    let mut font = if code { Font::MONOSPACE } else { Font::DEFAULT };
+    if bold {
+        font.weight = font::Weight::Bold;
+    }
+    if italic {
+        font.style = font::Style::Italic;
+    }
+    let mut item = span(std::mem::take(buf)).font(font).size(size);
+    if code {
+        item = item
+            .background(theme::DARK.palette().surface)
+            .padding([1, 4]);
+    }
+    spans.push(item);
+}
+
+fn normalize_markdown_line(raw: &str) -> (String, bool) {
+    let mut line = raw.trim().to_string();
+    let lower = line.to_ascii_lowercase();
+    let centered = lower.contains("<align center>")
+        || lower.contains("<center>")
+        || lower.contains("align=\"center\"")
+        || lower.contains("align='center'");
+    for token in [
+        "<align center>",
+        "</align>",
+        "<center>",
+        "</center>",
+        "<p align=\"center\">",
+        "<p align='center'>",
+        "</p>",
+    ] {
+        line = line.replace(token, "");
+    }
+    (line, centered)
+}
+
+fn strip_inline_html(input: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for ch in input.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn clean_markdown_text(input: &str) -> String {
+    input
+        .chars()
+        .map(|ch| match ch {
+            '\u{2018}' | '\u{2019}' => '\'',
+            '\u{201c}' | '\u{201d}' => '"',
+            '\u{2013}' | '\u{2014}' => '-',
+            ch if ch.is_ascii() => ch,
+            ch if ch.is_whitespace() => ' ',
+            _ => ' ',
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn text_widget(content: impl Into<String>, size: u16) -> Element<'static, Message> {
@@ -392,7 +636,10 @@ fn mod_row(item: &InstalledMod) -> Element<'_, Message> {
     let id = item.id.clone();
     container(
         row![
-            checkbox("", item.enabled).on_toggle(move |enabled| Message::ToggleMod { mod_id: id.clone(), enabled }),
+            checkbox("", item.enabled).on_toggle(move |enabled| Message::ToggleMod {
+                mod_id: id.clone(),
+                enabled
+            }),
             column![
                 text(&item.name).size(14),
                 text(format!(
@@ -404,7 +651,12 @@ fn mod_row(item: &InstalledMod) -> Element<'_, Message> {
             ]
             .spacing(2),
             Space::with_width(Length::Fill),
-            icon_button(icons::DELETE, 16.0, Message::DeleteMod(item.id.clone()), theme::danger_button),
+            icon_button(
+                icons::DELETE,
+                16.0,
+                Message::DeleteMod(item.id.clone()),
+                theme::danger_button
+            ),
         ]
         .spacing(10)
         .align_y(Alignment::Center),
@@ -414,12 +666,26 @@ fn mod_row(item: &InstalledMod) -> Element<'_, Message> {
     .into()
 }
 
-fn files<'a>(instance: &'a Instance, export_path: &'a str, export_busy: bool) -> Element<'a, Message> {
+fn files<'a>(
+    instance: &'a Instance,
+    export_path: &'a str,
+    export_busy: bool,
+) -> Element<'a, Message> {
     column![
         text(instance.path.display().to_string()).size(12),
         row![
-            icon_button(icons::FOLDER, 18.0, Message::OpenInstanceFiles(instance.id.clone()), theme::secondary_button),
-            icon_button(icons::LOGS, 18.0, Message::OpenInstanceLogs(instance.id.clone()), theme::secondary_button),
+            icon_button(
+                icons::FOLDER,
+                18.0,
+                Message::OpenInstanceFiles(instance.id.clone()),
+                theme::secondary_button
+            ),
+            icon_button(
+                icons::LOGS,
+                18.0,
+                Message::OpenInstanceLogs(instance.id.clone()),
+                theme::secondary_button
+            ),
             button("Crash Reports")
                 .on_press(Message::OpenInstanceCrashReports(instance.id.clone()))
                 .style(theme::secondary_button),
@@ -436,14 +702,23 @@ fn files<'a>(instance: &'a Instance, export_path: &'a str, export_busy: bool) ->
                 .on_input(Message::ExportPathChanged)
                 .style(theme::input)
                 .padding(10),
-            icon_button(icons::FOLDER, 18.0, Message::PickExportZip(instance.id.clone()), theme::secondary_button),
-            button(if export_busy { "Exporting..." } else { "Export Zip" })
-                .on_press(if export_busy {
-                    Message::Noop
-                } else {
-                    Message::ExportInstance(instance.id.clone())
-                })
-                .style(theme::secondary_button),
+            icon_button(
+                icons::FOLDER,
+                18.0,
+                Message::PickExportZip(instance.id.clone()),
+                theme::secondary_button
+            ),
+            button(if export_busy {
+                "Exporting..."
+            } else {
+                "Export Zip"
+            })
+            .on_press(if export_busy {
+                Message::Noop
+            } else {
+                Message::ExportInstance(instance.id.clone())
+            })
+            .style(theme::secondary_button),
         ]
         .spacing(8),
     ]
@@ -495,7 +770,9 @@ fn logs<'a>(launch_log: &'a [String], launch_status: Option<&str>) -> Element<'a
         row![
             text("Launch log").size(16),
             Space::with_width(Length::Fill),
-            button("Copy log").on_press(Message::CopyLogs).style(theme::secondary_button),
+            button("Copy log")
+                .on_press(Message::CopyLogs)
+                .style(theme::secondary_button),
         ]
         .align_y(Alignment::Center),
         container(body)

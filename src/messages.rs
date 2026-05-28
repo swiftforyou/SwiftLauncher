@@ -35,7 +35,10 @@ pub enum Message {
     CreateInstallResume,
     CreateInstallCancel,
     InstallStatusChanged(String),
-    InstallProgressChanged { status: String, progress: f32 },
+    InstallProgressChanged {
+        status: String,
+        progress: f32,
+    },
     InstanceCreated(Result<Instance, AppError>),
     SelectInstance(String),
     CloseInstanceDetail,
@@ -52,10 +55,18 @@ pub enum Message {
     OpenInstanceTab(String, InstanceTab),
     PlayInstance(String),
     StopInstance(String),
-    LaunchStarted { instance_id: String, pid: u32 },
-    LaunchReady { instance_id: String },
+    LaunchStarted {
+        instance_id: String,
+        pid: u32,
+    },
+    LaunchReady {
+        instance_id: String,
+    },
     LaunchFinished(Result<String, AppError>),
-    LaunchOutput { instance_id: String, line: String },
+    LaunchOutput {
+        instance_id: String,
+        line: String,
+    },
     LaunchExited {
         instance_id: String,
         status: String,
@@ -65,9 +76,15 @@ pub enum Message {
         playtime_seconds: u64,
         crash_report: Option<Result<String, AppError>>,
     },
-    LaunchFailed { instance_id: String, error: AppError },
+    LaunchFailed {
+        instance_id: String,
+        error: AppError,
+    },
     LaunchLog(String),
-    AssetsVerified { current: usize, total: usize },
+    AssetsVerified {
+        current: usize,
+        total: usize,
+    },
     OpenInstanceFiles(String),
     OpenInstanceLogs(String),
     OpenInstanceCrashReports(String),
@@ -83,7 +100,10 @@ pub enum Message {
     DeleteInstance(String),
     ModsLoaded(Result<Vec<InstalledMod>, AppError>),
     ModsSearchChanged(String),
-    ToggleMod { mod_id: String, enabled: bool },
+    ToggleMod {
+        mod_id: String,
+        enabled: bool,
+    },
     ModToggled(Result<Vec<InstalledMod>, AppError>),
     DeleteMod(String),
     ModDeleted(Result<Vec<InstalledMod>, AppError>),
@@ -107,7 +127,10 @@ pub enum Message {
     TotpChanged(String),
     TogglePasswordVisible,
     SubmitLogin,
-    MicrosoftDeviceReady { user_code: String, verification_uri: String },
+    MicrosoftDeviceReady {
+        user_code: String,
+        verification_uri: String,
+    },
     MicrosoftApproved(Result<Session, AppError>),
     AuthFinished(Result<Session, AppError>),
     CopyVerificationUrl,
@@ -138,7 +161,10 @@ pub enum Message {
     DownloadProgress(DownloadProgress),
     DownloadEvent(DownloadEvent),
     ErrorDismissed,
-    AvatarCached { uuid: String, path: Option<PathBuf> },
+    AvatarCached {
+        uuid: String,
+        path: Option<PathBuf>,
+    },
     Noop,
     FilePicked(Option<PathBuf>),
 }

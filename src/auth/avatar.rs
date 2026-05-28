@@ -26,7 +26,10 @@ pub fn avatar_cache_path(uuid: &str) -> Result<PathBuf, AppError> {
 }
 
 pub async fn cache_avatar(session: &Session) -> Result<Option<PathBuf>, AppError> {
-    let url = session.avatar_url.clone().unwrap_or_else(|| avatar_url_for(session));
+    let url = session
+        .avatar_url
+        .clone()
+        .unwrap_or_else(|| avatar_url_for(session));
     let path = avatar_cache_path(&session.uuid)?;
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -35,7 +38,11 @@ pub async fn cache_avatar(session: &Session) -> Result<Option<PathBuf>, AppError
         return Ok(Some(path));
     }
 
-    let bytes = reqwest::get(&url).await?.error_for_status()?.bytes().await?;
+    let bytes = reqwest::get(&url)
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
     if bytes.len() < 32 {
         return Ok(None);
     }

@@ -21,7 +21,9 @@ pub struct LauncherSettings {
 
 impl Default for LauncherSettings {
     fn default() -> Self {
-        let default_game_dir = data_dir().unwrap_or_else(|_| PathBuf::from(".")).join("instances");
+        let default_game_dir = data_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("instances");
         Self {
             theme_mode: ThemeMode::Dark,
             accent: Accent::Pink,

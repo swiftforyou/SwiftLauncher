@@ -1,6 +1,6 @@
-pub mod create;
 pub mod archive;
 pub mod crash;
+pub mod create;
 pub mod install;
 pub mod launch;
 pub mod launch_monitor;
@@ -120,7 +120,8 @@ impl InstanceManager {
     }
 
     pub fn save(&self, instance: &Instance) -> Result<(), AppError> {
-        self.store.set(&format!("{KEY_INSTANCE_PREFIX}{}", instance.id), instance)
+        self.store
+            .set(&format!("{KEY_INSTANCE_PREFIX}{}", instance.id), instance)
     }
 
     pub fn delete(&self, id: &str) -> Result<(), AppError> {

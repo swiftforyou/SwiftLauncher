@@ -3,12 +3,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-use crate::instances::install::InstallProgress;
 use crate::download::DownloadControl;
 use crate::error::AppError;
+use crate::instances::install::InstallProgress;
 use crate::instances::{install, instance_root, Instance, InstanceRunState, LoaderKind};
 
-pub async fn create_instance(name: String, version: String, loader: LoaderKind) -> Result<Instance, AppError> {
+pub async fn create_instance(
+    name: String,
+    version: String,
+    loader: LoaderKind,
+) -> Result<Instance, AppError> {
     create_instance_with_status(name, version, loader, None, None).await
 }
 
@@ -19,7 +23,15 @@ pub async fn create_instance_with_status(
     loader_version_choice: Option<String>,
     status_tx: Option<mpsc::UnboundedSender<InstallProgress>>,
 ) -> Result<Instance, AppError> {
-    create_instance_with_status_and_control(name, version, loader, loader_version_choice, status_tx, None).await
+    create_instance_with_status_and_control(
+        name,
+        version,
+        loader,
+        loader_version_choice,
+        status_tx,
+        None,
+    )
+    .await
 }
 
 pub async fn create_instance_with_status_and_control(
@@ -30,11 +42,6 @@ pub async fn create_instance_with_status_and_control(
     status_tx: Option<mpsc::UnboundedSender<InstallProgress>>,
     control_rx: Option<tokio::sync::watch::Receiver<DownloadControl>>,
 ) -> Result<Instance, AppError> {
-    if matches!(loader, LoaderKind::Forge | LoaderKind::NeoForge) {
-        return Err(AppError::Instance(format!(
-            "{loader} installer is not implemented yet. Choose Fabric, Quilt, or Vanilla for now."
-        )));
-    }
     send_status(&status_tx, "Preparing instance folders", 0.03);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -49,11 +56,22 @@ pub async fn create_instance_with_status_and_control(
     tokio::fs::create_dir_all(path.join("screenshots")).await?;
     tokio::fs::create_dir_all(path.join("resourcepacks")).await?;
     if let Some(control_rx) = control_rx {
-        install::install_minecraft_version_with_status_and_control(&version, status_tx.clone(), control_rx).await?;
+        install::install_minecraft_version_with_status_and_control(
+            &version,
+            status_tx.clone(),
+            control_rx,
+        )
+        .await?;
     } else {
         install::install_minecraft_version_with_status(&version, status_tx.clone()).await?;
     }
-    let loader_version = install::install_loader_profile_with_status(loader, &version, loader_version_choice, status_tx.clone()).await?;
+    let loader_version = install::install_loader_profile_with_status(
+        loader,
+        &version,
+        loader_version_choice,
+        status_tx.clone(),
+    )
+    .await?;
     send_status(&status_tx, "Saving instance metadata", 0.98);
 
     Ok(Instance {
@@ -78,7 +96,11 @@ pub async fn create_instance_with_status_and_control(
     })
 }
 
-fn send_status(status_tx: &Option<mpsc::UnboundedSender<InstallProgress>>, status: impl Into<String>, progress: f32) {
+fn send_status(
+    status_tx: &Option<mpsc::UnboundedSender<InstallProgress>>,
+    status: impl Into<String>,
+    progress: f32,
+) {
     if let Some(tx) = status_tx {
         let _ = tx.send(InstallProgress {
             status: status.into(),
@@ -92,7 +114,11 @@ fn sanitize_name(input: &str) -> String {
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
         .collect();
-    if out.is_empty() { "instance".into() } else { out }
+    if out.is_empty() {
+        "instance".into()
+    } else {
+        out
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,7 +148,9 @@ pub async fn fetch_available_versions() -> Result<Vec<String>, AppError> {
         .collect::<Vec<_>>();
 
     if versions.is_empty() {
-        return Err(AppError::Network("Mojang version manifest did not include versions".into()));
+        return Err(AppError::Network(
+            "Mojang version manifest did not include versions".into(),
+        ));
     }
 
     Ok(versions)
@@ -131,7 +159,8 @@ pub async fn fetch_available_versions() -> Result<Vec<String>, AppError> {
 pub fn fallback_versions() -> Vec<String> {
     [
         "1.21.8", "1.21.7", "1.21.6", "1.21.5", "1.21.4", "1.21.3", "1.21.2", "1.21.1", "1.21",
-        "1.20.6", "1.20.4", "1.20.1", "1.19.4", "1.19.2", "1.18.2", "1.17.1", "1.16.5", "1.12.2", "1.8.9",
+        "1.20.6", "1.20.4", "1.20.1", "1.19.4", "1.19.2", "1.18.2", "1.17.1", "1.16.5", "1.12.2",
+        "1.8.9",
     ]
     .into_iter()
     .map(str::to_string)

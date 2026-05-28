@@ -51,7 +51,11 @@ impl Session {
     }
 }
 
-pub async fn authenticate(provider: AuthProvider, username: String, password: String) -> Result<Session, AppError> {
+pub async fn authenticate(
+    provider: AuthProvider,
+    username: String,
+    password: String,
+) -> Result<Session, AppError> {
     match provider {
         AuthProvider::Microsoft => microsoft::authenticate_device_stub().await,
         AuthProvider::ElyBy => elyby::authenticate(username, password).await,

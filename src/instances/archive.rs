@@ -42,15 +42,22 @@ fn export_blocking(instance: &Instance, destination: &Path) -> Result<String, Ap
         .map_err(|error| AppError::Storage(error.to_string()))?;
 
     add_dir(&mut zip, &instance.path, &instance.path, options)?;
-    zip.finish().map_err(|error| AppError::Storage(error.to_string()))?;
+    zip.finish()
+        .map_err(|error| AppError::Storage(error.to_string()))?;
     Ok(destination.display().to_string())
 }
 
-fn add_dir(zip: &mut ZipWriter<File>, root: &Path, dir: &Path, options: SimpleFileOptions) -> Result<(), AppError> {
+fn add_dir(
+    zip: &mut ZipWriter<File>,
+    root: &Path,
+    dir: &Path,
+    options: SimpleFileOptions,
+) -> Result<(), AppError> {
     for entry in fs::read_dir(dir).map_err(|error| AppError::Storage(error.to_string()))? {
         let entry = entry.map_err(|error| AppError::Storage(error.to_string()))?;
         let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).map_err(|error| AppError::Storage(error.to_string()))?;
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|error| AppError::Storage(error.to_string()))?;
         if metadata.file_type().is_symlink() {
             continue;
         }
@@ -76,7 +83,8 @@ fn add_dir(zip: &mut ZipWriter<File>, root: &Path, dir: &Path, options: SimpleFi
 
 fn import_blocking(archive_path: &Path) -> Result<Instance, AppError> {
     let file = File::open(archive_path).map_err(|error| AppError::Storage(error.to_string()))?;
-    let mut archive = ZipArchive::new(file).map_err(|error| AppError::Storage(error.to_string()))?;
+    let mut archive =
+        ZipArchive::new(file).map_err(|error| AppError::Storage(error.to_string()))?;
     let mut manifest = String::new();
     archive
         .by_name(MANIFEST)
@@ -109,13 +117,16 @@ fn import_blocking(archive_path: &Path) -> Result<Instance, AppError> {
         let relative = &name[FILES_PREFIX.len()..];
         let output_path = instance.path.join(relative);
         if file.is_dir() {
-            fs::create_dir_all(output_path).map_err(|error| AppError::Storage(error.to_string()))?;
+            fs::create_dir_all(output_path)
+                .map_err(|error| AppError::Storage(error.to_string()))?;
         } else {
             if let Some(parent) = output_path.parent() {
                 fs::create_dir_all(parent).map_err(|error| AppError::Storage(error.to_string()))?;
             }
-            let mut output = File::create(output_path).map_err(|error| AppError::Storage(error.to_string()))?;
-            std::io::copy(&mut file, &mut output).map_err(|error| AppError::Storage(error.to_string()))?;
+            let mut output =
+                File::create(output_path).map_err(|error| AppError::Storage(error.to_string()))?;
+            std::io::copy(&mut file, &mut output)
+                .map_err(|error| AppError::Storage(error.to_string()))?;
         }
     }
 
@@ -156,7 +167,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_instance(name: &str) -> Instance {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let id = format!("{name}-{now}");
         let root = data_dir().unwrap().join("test-instances");
         let path = root.join(&id);
@@ -185,13 +199,17 @@ mod tests {
     #[tokio::test]
     async fn export_then_import_roundtrip() {
         let mut instance = unique_instance("archive-test");
-        tokio::fs::create_dir_all(instance.path.join("mods")).await.unwrap();
+        tokio::fs::create_dir_all(instance.path.join("mods"))
+            .await
+            .unwrap();
         tokio::fs::write(instance.path.join("mods").join("mod.jar"), b"mod-data")
             .await
             .unwrap();
 
         let zip_path = instance.path.with_extension("zip");
-        let exported = export_instance(instance.clone(), zip_path.clone()).await.unwrap();
+        let exported = export_instance(instance.clone(), zip_path.clone())
+            .await
+            .unwrap();
         assert_eq!(exported, zip_path.display().to_string());
 
         let imported = import_instance(zip_path.clone()).await.unwrap();

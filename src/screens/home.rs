@@ -775,17 +775,25 @@ fn delete_confirm_overlay<'a>(id: &'a str, name: &'a str) -> Element<'a, Message
     let dialog = container(
         column![
             text("Delete instance").size(22),
-            text(format!("Remove {name} from Swift Launcher? Instance metadata is deleted. Files stay on disk for now.")).size(13),
+            text(format!("Remove {name} from Swift Launcher? Choose whether to keep or delete the instance folder.")).size(13),
             row![
-                button("Cancel").on_press(Message::CancelDeleteInstance).style(theme::secondary_button),
+                button("Cancel")
+                    .on_press(Message::CancelDeleteInstance)
+                    .style(theme::secondary_button),
                 Space::with_width(Length::Fill),
-                button("Delete").on_press(Message::DeleteInstance(id.to_string())).style(theme::danger_button),
+                button("Metadata only")
+                    .on_press(Message::DeleteInstance(id.to_string()))
+                    .style(theme::secondary_button),
+                button("Delete files")
+                    .on_press(Message::DeleteInstanceWithFiles(id.to_string()))
+                    .style(theme::danger_button),
             ]
+            .spacing(8)
             .align_y(Alignment::Center),
         ]
         .spacing(14),
     )
-    .width(420)
+    .width(520)
     .padding(20)
     .style(theme::shell);
 

@@ -129,6 +129,21 @@ impl InstanceManager {
     }
 }
 
+pub async fn delete_instance_files(instance: Instance) -> Result<String, AppError> {
+    let path = instance.path.clone();
+    let name = instance.name.clone();
+    if !path.starts_with(instance_root()?) {
+        return Err(AppError::Instance(format!(
+            "refusing to delete instance files outside launcher directory: {}",
+            path.display()
+        )));
+    }
+    if tokio::fs::metadata(&path).await.is_ok() {
+        tokio::fs::remove_dir_all(&path).await?;
+    }
+    Ok(format!("deleted files for {name}: {}", path.display()))
+}
+
 pub fn instance_root() -> Result<PathBuf, AppError> {
     Ok(data_dir()?.join("instances"))
 }

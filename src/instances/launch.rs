@@ -5,6 +5,7 @@ use ring::digest;
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 
 use crate::auth::{AuthProvider, Session};
 use crate::download::java;
@@ -41,9 +42,25 @@ pub async fn prepare_launch_command(
     instance: Instance,
     session: Session,
 ) -> Result<(Command, String), AppError> {
-    install::install_minecraft_version(&instance.minecraft_version).await?;
+    prepare_launch_command_with_status(instance, session, None).await
+}
 
+pub async fn prepare_launch_command_with_status(
+    instance: Instance,
+    session: Session,
+    status_tx: Option<mpsc::UnboundedSender<install::InstallProgress>>,
+) -> Result<(Command, String), AppError> {
+    send_prepare_status(
+        &status_tx,
+        format!("Checking Minecraft {}", instance.minecraft_version),
+        0.02,
+    );
+    install::install_minecraft_version_with_status(&instance.minecraft_version, status_tx.clone())
+        .await?;
+
+    send_prepare_status(&status_tx, "Resolving launch profile", 0.96);
     let root = data_dir()?;
+    let game_dir = effective_game_dir(&instance);
     let effective_version = effective_version_id(&instance)?;
     let version_dir = root.join("versions").join(&effective_version);
     let version_json_path = version_dir.join(format!("{effective_version}.json"));
@@ -65,26 +82,32 @@ pub async fn prepare_launch_command(
         .as_ref()
         .map(|version| version.major_version)
         .unwrap_or_else(|| java::required_java_for_minecraft_version(&instance.minecraft_version));
+    send_prepare_status(&status_tx, format!("Checking Java {required_java}"), 0.975);
     let java = java::ensure_suitable_java(&instance.java_path, required_java).await?;
     let natives_dir = version_dir.join("natives");
+    tokio::fs::create_dir_all(&game_dir).await?;
     tokio::fs::create_dir_all(&natives_dir).await?;
 
     let libraries_dir = root.join("libraries");
+    send_prepare_status(&status_tx, "Extracting native libraries", 0.985);
     extract_natives(&version_json, &libraries_dir, &natives_dir).await?;
 
+    send_prepare_status(&status_tx, "Building launch command", 0.992);
     let classpath = build_classpath(&version_json, &libraries_dir, &root, &effective_version)?;
     let variables = LaunchVariables::new(
         &instance,
         &session,
         &root,
+        &game_dir,
         &natives_dir,
         &classpath,
         &version_json,
     );
-    let (jvm_args, game_args) = build_arguments(&version_json, &variables)?;
+    let (jvm_args, mut game_args) = build_arguments(&version_json, &variables, &instance)?;
+    append_instance_game_options(&instance, &mut game_args);
 
     let mut command = Command::new(&java.path);
-    command.current_dir(&instance.path);
+    command.current_dir(&game_dir);
     command.arg(format!("-Xmx{}M", instance.ram_mb));
     command.arg(format!("-Xms{}M", instance.ram_mb.min(1024)));
     if let Some(agent_arg) = authlib_injector_arg(&session, &root).await? {
@@ -101,7 +124,21 @@ pub async fn prepare_launch_command(
         command.arg(arg);
     }
 
+    send_prepare_status(&status_tx, "Launch command ready", 1.0);
     Ok((command, java.version_line))
+}
+
+fn send_prepare_status(
+    status_tx: &Option<mpsc::UnboundedSender<install::InstallProgress>>,
+    status: impl Into<String>,
+    progress: f32,
+) {
+    if let Some(tx) = status_tx {
+        let _ = tx.send(install::InstallProgress {
+            status: status.into(),
+            progress: progress.clamp(0.0, 1.0),
+        });
+    }
 }
 
 async fn authlib_injector_arg(session: &Session, root: &Path) -> Result<Option<String>, AppError> {
@@ -314,15 +351,11 @@ impl LaunchVariables {
         instance: &Instance,
         session: &Session,
         root: &Path,
+        game_dir: &Path,
         natives_dir: &Path,
         classpath: &str,
         version_json: &VersionJson,
     ) -> Self {
-        let game_dir = if instance.game_dir_override.trim().is_empty() {
-            instance.path.clone()
-        } else {
-            PathBuf::from(instance.game_dir_override.trim())
-        };
         let user_type = match session.provider {
             AuthProvider::Microsoft => "msa",
             AuthProvider::ElyBy | AuthProvider::LittleSkin => "legacy",
@@ -331,7 +364,7 @@ impl LaunchVariables {
         let mut values = BTreeMap::new();
         values.insert("auth_player_name".into(), session.username.clone());
         values.insert("version_name".into(), instance.minecraft_version.clone());
-        values.insert("game_directory".into(), path_string(&game_dir));
+        values.insert("game_directory".into(), path_string(game_dir));
         values.insert("assets_root".into(), path_string(&root.join("assets")));
         values.insert(
             "assets_index_name".into(),
@@ -381,10 +414,12 @@ async fn read_version_json(path: &Path) -> Result<VersionJson, AppError> {
 fn build_arguments(
     version: &VersionJson,
     variables: &LaunchVariables,
+    instance: &Instance,
 ) -> Result<(Vec<String>, Vec<String>), AppError> {
+    let features = LaunchFeatures::from_instance(instance);
     if let Some(arguments) = &version.arguments {
-        let jvm = expand_arguments(&arguments.jvm, variables);
-        let game = expand_arguments(&arguments.game, variables);
+        let jvm = expand_arguments(&arguments.jvm, variables, &features);
+        let game = expand_arguments(&arguments.game, variables, &features);
         return Ok((jvm, game));
     }
 
@@ -406,17 +441,23 @@ fn build_arguments(
     Ok((jvm, game))
 }
 
-fn expand_arguments(arguments: &[Argument], variables: &LaunchVariables) -> Vec<String> {
+fn expand_arguments(
+    arguments: &[Argument],
+    variables: &LaunchVariables,
+    features: &LaunchFeatures,
+) -> Vec<String> {
     let mut out = Vec::new();
     for argument in arguments {
         match argument {
             Argument::String(value) => out.push(variables.apply(value)),
-            Argument::Ruled { rules, value } if rules_allowed(rules.as_deref()) => match value {
-                ArgumentValue::One(value) => out.push(variables.apply(value)),
-                ArgumentValue::Many(values) => {
-                    out.extend(values.iter().map(|value| variables.apply(value)))
+            Argument::Ruled { rules, value } if rules_allowed(rules.as_deref(), features) => {
+                match value {
+                    ArgumentValue::One(value) => out.push(variables.apply(value)),
+                    ArgumentValue::Many(values) => {
+                        out.extend(values.iter().map(|value| variables.apply(value)))
+                    }
                 }
-            },
+            }
             Argument::Ruled { .. } => {}
         }
     }
@@ -539,30 +580,30 @@ fn extract_native_jar(jar_path: &Path, destination: &Path) -> Result<(), AppErro
 }
 
 fn library_allowed(library: &Library) -> bool {
-    rules_allowed(library.rules.as_deref())
+    rules_allowed(library.rules.as_deref(), &LaunchFeatures::default())
 }
 
-fn rules_allowed(rules: Option<&[Rule]>) -> bool {
+fn rules_allowed(rules: Option<&[Rule]>, features: &LaunchFeatures) -> bool {
     let Some(rules) = rules else {
         return true;
     };
 
     let mut allowed = false;
     for rule in rules {
-        if rule_matches_current_context(rule) {
+        if rule_matches_current_context(rule, features) {
             allowed = rule.action == "allow";
         }
     }
     allowed
 }
 
-fn rule_matches_current_context(rule: &Rule) -> bool {
-    if rule
-        .features
-        .as_ref()
-        .is_some_and(|features| !features.is_empty())
-    {
-        return false;
+fn rule_matches_current_context(rule: &Rule, features: &LaunchFeatures) -> bool {
+    if let Some(required) = &rule.features {
+        for (name, expected) in required {
+            if features.get(name) != *expected {
+                return false;
+            }
+        }
     }
 
     let Some(os) = &rule.os else {
@@ -572,6 +613,69 @@ fn rule_matches_current_context(rule: &Rule) -> bool {
         return true;
     };
     name == current_os_name()
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct LaunchFeatures {
+    has_custom_resolution: bool,
+}
+
+impl LaunchFeatures {
+    fn from_instance(instance: &Instance) -> Self {
+        Self {
+            has_custom_resolution: instance.resolution_width > 0 && instance.resolution_height > 0,
+        }
+    }
+
+    fn get(&self, name: &str) -> bool {
+        match name {
+            "has_custom_resolution" => self.has_custom_resolution,
+            "is_demo_user" => false,
+            "has_quick_plays_support" => false,
+            "is_quick_play_singleplayer" => false,
+            "is_quick_play_multiplayer" => false,
+            "is_quick_play_realms" => false,
+            _ => false,
+        }
+    }
+}
+
+fn effective_game_dir(instance: &Instance) -> PathBuf {
+    if instance.game_dir_override.trim().is_empty() {
+        instance.path.clone()
+    } else {
+        PathBuf::from(instance.game_dir_override.trim())
+    }
+}
+
+fn append_instance_game_options(instance: &Instance, game_args: &mut Vec<String>) {
+    if instance.fullscreen && !game_args.iter().any(|arg| arg == "--fullscreen") {
+        game_args.push("--fullscreen".into());
+    }
+
+    let server = instance.server.trim();
+    if server.is_empty() {
+        return;
+    }
+    let (host, port) = split_server(server);
+    if !host.is_empty() {
+        game_args.push("--server".into());
+        game_args.push(host.into());
+    }
+    if let Some(port) = port {
+        game_args.push("--port".into());
+        game_args.push(port.to_string());
+    }
+}
+
+fn split_server(server: &str) -> (&str, Option<u16>) {
+    let Some((host, port)) = server.rsplit_once(':') else {
+        return (server, None);
+    };
+    match port.parse::<u16>() {
+        Ok(port) => (host, Some(port)),
+        Err(_) => (server, None),
+    }
 }
 
 fn native_classifier_for_current_os(library: &Library) -> Option<String> {

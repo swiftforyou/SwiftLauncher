@@ -5,8 +5,8 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 
 use crate::download::{
-    download_jobs_checked_with_progress, download_jobs_checked_with_progress_and_control,
-    DownloadControl, DownloadJob,
+    download_jobs_checked_with_progress, download_jobs_checked_with_progress_control_and_events,
+    DownloadControl, DownloadEvent, DownloadJob,
 };
 use crate::error::AppError;
 use crate::instances::LoaderKind;
@@ -713,22 +713,51 @@ async fn install_minecraft_version_inner(
         0.12,
     );
     let (core_tx, mut core_rx) = mpsc::unbounded_channel();
+    let (core_event_tx, mut core_event_rx) = mpsc::unbounded_channel();
     let status_for_core = status_tx.clone();
     let core_forwarder = tokio::spawn(async move {
-        while let Some((done, total)) = core_rx.recv().await {
-            let progress = 0.12 + progress_fraction(done, total) * 0.18;
-            send_status(
-                &status_for_core,
-                format!("Core files {done}/{total}"),
-                progress,
-            );
+        let mut done = 0usize;
+        let total = core_total;
+        let mut progress = 0.12;
+        let mut speed = 0u64;
+        loop {
+            tokio::select! {
+                Some((current, count)) = core_rx.recv() => {
+                    done = current;
+                    progress = 0.12 + progress_fraction(done, count) * 0.18;
+                    send_status(
+                        &status_for_core,
+                        format!("Core files {done}/{count}"),
+                        progress,
+                    );
+                }
+                Some(event) = core_event_rx.recv() => {
+                    if let Some(status) = download_event_status("Core", done, total, &event, &mut speed) {
+                        send_status(&status_for_core, status, progress);
+                    }
+                }
+                else => break,
+            }
         }
     });
     if let Some(control_rx) = &control_rx {
-        download_jobs_checked_with_progress_and_control(jobs, Some(core_tx), control_rx.clone())
-            .await?;
+        download_jobs_checked_with_progress_control_and_events(
+            jobs,
+            Some(core_tx),
+            control_rx.clone(),
+            Some(core_event_tx),
+        )
+        .await?;
     } else {
-        download_jobs_checked_with_progress(jobs, Some(core_tx)).await?;
+        let (control_tx, control_rx) = tokio::sync::watch::channel(DownloadControl::Run);
+        download_jobs_checked_with_progress_control_and_events(
+            jobs,
+            Some(core_tx),
+            control_rx,
+            Some(core_event_tx),
+        )
+        .await?;
+        drop(control_tx);
     }
     let _ = core_forwarder.await;
 
@@ -762,26 +791,51 @@ async fn install_minecraft_version_inner(
         0.35,
     );
     let (asset_tx, mut asset_rx) = mpsc::unbounded_channel();
+    let (asset_event_tx, mut asset_event_rx) = mpsc::unbounded_channel();
     let status_for_assets = status_tx.clone();
     let asset_forwarder = tokio::spawn(async move {
-        while let Some((done, total)) = asset_rx.recv().await {
-            let progress = 0.35 + progress_fraction(done, total) * 0.60;
-            send_status(
-                &status_for_assets,
-                format!("Assets {done}/{total}"),
-                progress,
-            );
+        let mut done = 0usize;
+        let total = asset_total;
+        let mut progress = 0.35;
+        let mut speed = 0u64;
+        loop {
+            tokio::select! {
+                Some((current, count)) = asset_rx.recv() => {
+                    done = current;
+                    progress = 0.35 + progress_fraction(done, count) * 0.60;
+                    send_status(
+                        &status_for_assets,
+                        format!("Assets {done}/{count}"),
+                        progress,
+                    );
+                }
+                Some(event) = asset_event_rx.recv() => {
+                    if let Some(status) = download_event_status("Assets", done, total, &event, &mut speed) {
+                        send_status(&status_for_assets, status, progress);
+                    }
+                }
+                else => break,
+            }
         }
     });
     if let Some(control_rx) = &control_rx {
-        download_jobs_checked_with_progress_and_control(
+        download_jobs_checked_with_progress_control_and_events(
             asset_jobs,
             Some(asset_tx),
             control_rx.clone(),
+            Some(asset_event_tx),
         )
         .await?;
     } else {
-        download_jobs_checked_with_progress(asset_jobs, Some(asset_tx)).await?;
+        let (control_tx, control_rx) = tokio::sync::watch::channel(DownloadControl::Run);
+        download_jobs_checked_with_progress_control_and_events(
+            asset_jobs,
+            Some(asset_tx),
+            control_rx,
+            Some(asset_event_tx),
+        )
+        .await?;
+        drop(control_tx);
     }
     let _ = asset_forwarder.await;
     send_status(&status_tx, "Writing install marker", 0.97);
@@ -806,6 +860,76 @@ fn progress_fraction(done: usize, total: usize) -> f32 {
         1.0
     } else {
         done as f32 / total as f32
+    }
+}
+
+fn download_event_status(
+    phase: &str,
+    done: usize,
+    total: usize,
+    event: &DownloadEvent,
+    speed: &mut u64,
+) -> Option<String> {
+    match event {
+        DownloadEvent::Speed { bytes_per_second } => {
+            *speed = *bytes_per_second;
+            Some(format!("{phase} {done}/{total} @ {}", format_speed(*speed)))
+        }
+        DownloadEvent::Progress(progress) => {
+            let name = compact_job_name(&progress.job_id);
+            let bytes = match progress.total_bytes {
+                Some(total_bytes) => format!(
+                    "{}/{}",
+                    format_bytes(progress.downloaded_bytes),
+                    format_bytes(total_bytes)
+                ),
+                None => format_bytes(progress.downloaded_bytes),
+            };
+            let suffix = if *speed > 0 {
+                format!(" @ {}", format_speed(*speed))
+            } else {
+                String::new()
+            };
+            Some(format!("{phase} {done}/{total}: {name} {bytes}{suffix}"))
+        }
+        DownloadEvent::Complete { job_id } => Some(format!(
+            "{phase} {done}/{total}: {} complete",
+            compact_job_name(job_id)
+        )),
+        DownloadEvent::Failed { job_id, reason } => Some(format!(
+            "{phase} {done}/{total}: {} failed: {reason}",
+            compact_job_name(job_id)
+        )),
+    }
+}
+
+fn compact_job_name(job_id: &str) -> String {
+    let raw = job_id.rsplit(':').next().unwrap_or(job_id);
+    let short = raw.rsplit('/').next().unwrap_or(raw);
+    if short.len() > 54 {
+        format!("...{}", &short[short.len().saturating_sub(51)..])
+    } else {
+        short.to_string()
+    }
+}
+
+fn format_speed(bytes_per_second: u64) -> String {
+    format!("{}/s", format_bytes(bytes_per_second))
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let bytes = bytes as f64;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes / GB)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes / MB)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes / KB)
+    } else {
+        format!("{bytes:.0} B")
     }
 }
 

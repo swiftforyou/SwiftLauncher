@@ -1,11 +1,17 @@
 use std::collections::BTreeSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::download::{download_jobs_checked, DownloadJob};
+use crate::download::{
+    download_jobs_checked_with_progress_control_and_events, DownloadControl, DownloadEvent,
+    DownloadJob,
+};
 use crate::error::AppError;
+use crate::instances::install::InstallProgress;
 use crate::instances::LoaderKind;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModrinthKind {
@@ -271,10 +277,40 @@ pub async fn install_modrinth_project(
     loader: LoaderKind,
     project_id: String,
 ) -> Result<Vec<InstalledMod>, AppError> {
+    install_modrinth_project_with_status(
+        kind,
+        instance_path,
+        minecraft_version,
+        loader,
+        project_id,
+        None,
+    )
+    .await
+}
+
+pub async fn install_modrinth_project_with_status(
+    kind: ModrinthKind,
+    instance_path: PathBuf,
+    minecraft_version: String,
+    loader: LoaderKind,
+    project_id: String,
+    status_tx: Option<mpsc::UnboundedSender<InstallProgress>>,
+) -> Result<Vec<InstalledMod>, AppError> {
+    send_install_status(
+        &status_tx,
+        format!("Resolving Modrinth {kind} project"),
+        0.03,
+    );
     if kind == ModrinthKind::Modpacks {
-        return Err(AppError::Instance(
-            "Modpack install needs mrpack unpacking and override merge support first".into(),
-        ));
+        install_modrinth_modpack(
+            instance_path.clone(),
+            minecraft_version,
+            loader,
+            project_id,
+            status_tx,
+        )
+        .await?;
+        return list_mods(&instance_path).await;
     }
     let loader = if kind == ModrinthKind::Mods {
         Some(modrinth_loader(loader)?)
@@ -293,8 +329,203 @@ pub async fn install_modrinth_project(
         &mut jobs,
     )
     .await?;
-    download_jobs_checked(jobs).await?;
+    download_modrinth_jobs_with_status(kind, jobs, status_tx, 0.10, 0.95).await?;
     list_mods(&instance_path).await
+}
+
+async fn install_modrinth_modpack(
+    instance_path: PathBuf,
+    minecraft_version: String,
+    loader: LoaderKind,
+    project_id: String,
+    status_tx: Option<mpsc::UnboundedSender<InstallProgress>>,
+) -> Result<(), AppError> {
+    let loader = modrinth_loader(loader).ok();
+    let version = compatible_modrinth_version(&project_id, &minecraft_version, loader).await?;
+    let file = primary_file(version.files).ok_or_else(|| {
+        AppError::Download(format!(
+            "Modrinth modpack {project_id} has no downloadable files"
+        ))
+    })?;
+    if !file.filename.ends_with(".mrpack") {
+        return Err(AppError::Download(format!(
+            "Modrinth modpack {project_id} primary file is not .mrpack: {}",
+            file.filename
+        )));
+    }
+
+    let pack_dir = instance_path.join("modpacks");
+    tokio::fs::create_dir_all(&pack_dir).await?;
+    let pack_path = pack_dir.join(&file.filename);
+    send_install_status(&status_tx, "Downloading .mrpack", 0.08);
+    download_modrinth_jobs_with_status(
+        ModrinthKind::Modpacks,
+        vec![DownloadJob {
+            id: format!("modrinth-modpack:{project_id}:{}", file.filename),
+            url: file.url,
+            destination_path: pack_path.clone(),
+            expected_sha1: file.hashes.sha1,
+            size_bytes: file.size,
+        }],
+        status_tx.clone(),
+        0.08,
+        0.18,
+    )
+    .await?;
+
+    send_install_status(&status_tx, "Reading .mrpack index", 0.20);
+    let index = read_mrpack_index(pack_path.clone()).await?;
+    let jobs = index
+        .files
+        .into_iter()
+        .filter(|file| file.env.client != Some(MrpackSideSupport::Unsupported))
+        .map(|file| {
+            let url = file.downloads.into_iter().next().ok_or_else(|| {
+                AppError::Download(format!("mrpack file {} has no download URL", file.path))
+            })?;
+            let destination_path = safe_instance_child(&instance_path, &file.path)?;
+            Ok(DownloadJob {
+                id: format!("mrpack:{}", file.path),
+                url,
+                destination_path,
+                expected_sha1: file.hashes.sha1,
+                size_bytes: file.file_size,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    download_modrinth_jobs_with_status(ModrinthKind::Modpacks, jobs, status_tx.clone(), 0.22, 0.92)
+        .await?;
+    send_install_status(&status_tx, "Applying modpack overrides", 0.95);
+    extract_mrpack_overrides(pack_path, instance_path).await
+}
+
+async fn download_modrinth_jobs_with_status(
+    kind: ModrinthKind,
+    jobs: Vec<DownloadJob>,
+    status_tx: Option<mpsc::UnboundedSender<InstallProgress>>,
+    start: f32,
+    end: f32,
+) -> Result<(), AppError> {
+    let total = jobs.len();
+    if total == 0 {
+        send_install_status(&status_tx, format!("{kind} has no files to download"), end);
+        return Ok(());
+    }
+    send_install_status(
+        &status_tx,
+        format!("Downloading {total} {kind} files"),
+        start,
+    );
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (control_tx, control_rx) = tokio::sync::watch::channel(DownloadControl::Run);
+    let status_for_forwarder = status_tx.clone();
+    let span = (end - start).max(0.01);
+    let forwarder = tokio::spawn(async move {
+        let mut done = 0usize;
+        let mut progress = start;
+        let mut speed = 0u64;
+        loop {
+            tokio::select! {
+                Some((current, count)) = progress_rx.recv() => {
+                    done = current;
+                    progress = start + progress_fraction(done, count) * span;
+                    send_install_status(
+                        &status_for_forwarder,
+                        format!("{kind} files {done}/{count}"),
+                        progress,
+                    );
+                }
+                Some(event) = event_rx.recv() => {
+                    if let Some(status) = download_event_status(kind, done, total, &event, &mut speed) {
+                        send_install_status(&status_for_forwarder, status, progress);
+                    }
+                }
+                else => break,
+            }
+        }
+    });
+    download_jobs_checked_with_progress_control_and_events(
+        jobs,
+        Some(progress_tx),
+        control_rx,
+        Some(event_tx),
+    )
+    .await?;
+    drop(control_tx);
+    let _ = forwarder.await;
+    send_install_status(&status_tx, format!("{kind} install complete"), end);
+    Ok(())
+}
+
+async fn read_mrpack_index(pack_path: PathBuf) -> Result<MrpackIndex, AppError> {
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&pack_path).map_err(|error| {
+            AppError::Download(format!("open mrpack {}: {error}", pack_path.display()))
+        })?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|error| {
+            AppError::Download(format!("read mrpack {}: {error}", pack_path.display()))
+        })?;
+        let mut index = archive.by_name("modrinth.index.json").map_err(|error| {
+            AppError::Download(format!(
+                "mrpack {} missing modrinth.index.json: {error}",
+                pack_path.display()
+            ))
+        })?;
+        let mut bytes = Vec::new();
+        index
+            .read_to_end(&mut bytes)
+            .map_err(|error| AppError::Download(format!("read mrpack index: {error}")))?;
+        serde_json::from_slice::<MrpackIndex>(&bytes).map_err(AppError::from)
+    })
+    .await
+    .map_err(|error| AppError::Download(error.to_string()))?
+}
+
+async fn extract_mrpack_overrides(
+    pack_path: PathBuf,
+    instance_path: PathBuf,
+) -> Result<(), AppError> {
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&pack_path).map_err(|error| {
+            AppError::Download(format!("open mrpack {}: {error}", pack_path.display()))
+        })?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|error| {
+            AppError::Download(format!("read mrpack {}: {error}", pack_path.display()))
+        })?;
+        for index in 0..archive.len() {
+            let mut file = archive
+                .by_index(index)
+                .map_err(|error| AppError::Download(format!("read mrpack entry: {error}")))?;
+            let name = file.name().replace('\\', "/");
+            let Some(relative) = name
+                .strip_prefix("overrides/")
+                .or_else(|| name.strip_prefix("client-overrides/"))
+            else {
+                continue;
+            };
+            if relative.is_empty() {
+                continue;
+            }
+            let destination = safe_instance_child(&instance_path, relative)?;
+            if file.is_dir() || name.ends_with('/') {
+                std::fs::create_dir_all(&destination)
+                    .map_err(|error| AppError::Download(error.to_string()))?;
+                continue;
+            }
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| AppError::Download(error.to_string()))?;
+            }
+            let mut output = std::fs::File::create(&destination)
+                .map_err(|error| AppError::Download(error.to_string()))?;
+            std::io::copy(&mut file, &mut output)
+                .map_err(|error| AppError::Download(error.to_string()))?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| AppError::Download(error.to_string()))?
 }
 
 async fn collect_modrinth_jobs(
@@ -461,6 +692,36 @@ struct ModrinthDependency {
     dependency_type: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct MrpackIndex {
+    #[serde(default)]
+    files: Vec<MrpackFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MrpackFile {
+    path: String,
+    hashes: ModrinthHashes,
+    #[serde(default)]
+    env: MrpackEnv,
+    downloads: Vec<String>,
+    #[serde(default, rename = "fileSize")]
+    file_size: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MrpackEnv {
+    client: Option<MrpackSideSupport>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum MrpackSideSupport {
+    Required,
+    Optional,
+    Unsupported,
+}
+
 fn modrinth_loader(loader: LoaderKind) -> Result<&'static str, AppError> {
     match loader {
         LoaderKind::Fabric => Ok("fabric"),
@@ -470,6 +731,117 @@ fn modrinth_loader(loader: LoaderKind) -> Result<&'static str, AppError> {
         LoaderKind::Vanilla => Err(AppError::Instance(
             "Modrinth mod install needs a mod loader instance".into(),
         )),
+    }
+}
+
+fn safe_instance_child(root: &Path, relative: &str) -> Result<PathBuf, AppError> {
+    let relative = relative.replace('\\', "/");
+    let mut path = PathBuf::new();
+    for component in Path::new(&relative).components() {
+        match component {
+            std::path::Component::Normal(part) => path.push(part),
+            std::path::Component::CurDir => {}
+            _ => {
+                return Err(AppError::Download(format!(
+                    "unsafe path in Modrinth pack: {relative}"
+                )))
+            }
+        }
+    }
+    if path.as_os_str().is_empty() {
+        return Err(AppError::Download("empty path in Modrinth pack".into()));
+    }
+    Ok(root.join(path))
+}
+
+fn send_install_status(
+    status_tx: &Option<mpsc::UnboundedSender<InstallProgress>>,
+    status: impl Into<String>,
+    progress: f32,
+) {
+    if let Some(tx) = status_tx {
+        let _ = tx.send(InstallProgress {
+            status: status.into(),
+            progress: progress.clamp(0.0, 1.0),
+        });
+    }
+}
+
+fn progress_fraction(done: usize, total: usize) -> f32 {
+    if total == 0 {
+        1.0
+    } else {
+        done as f32 / total as f32
+    }
+}
+
+fn download_event_status(
+    kind: ModrinthKind,
+    done: usize,
+    total: usize,
+    event: &DownloadEvent,
+    speed: &mut u64,
+) -> Option<String> {
+    match event {
+        DownloadEvent::Speed { bytes_per_second } => {
+            *speed = *bytes_per_second;
+            Some(format!("{kind} {done}/{total} @ {}", format_speed(*speed)))
+        }
+        DownloadEvent::Progress(progress) => {
+            let name = compact_job_name(&progress.job_id);
+            let bytes = match progress.total_bytes {
+                Some(total_bytes) => format!(
+                    "{}/{}",
+                    format_bytes(progress.downloaded_bytes),
+                    format_bytes(total_bytes)
+                ),
+                None => format_bytes(progress.downloaded_bytes),
+            };
+            let suffix = if *speed > 0 {
+                format!(" @ {}", format_speed(*speed))
+            } else {
+                String::new()
+            };
+            Some(format!("{kind} {done}/{total}: {name} {bytes}{suffix}"))
+        }
+        DownloadEvent::Complete { job_id } => Some(format!(
+            "{kind} {done}/{total}: {} complete",
+            compact_job_name(job_id)
+        )),
+        DownloadEvent::Failed { job_id, reason } => Some(format!(
+            "{kind} {done}/{total}: {} failed: {reason}",
+            compact_job_name(job_id)
+        )),
+    }
+}
+
+fn compact_job_name(job_id: &str) -> String {
+    let raw = job_id.rsplit(':').next().unwrap_or(job_id);
+    let short = raw.rsplit('/').next().unwrap_or(raw);
+    if short.len() > 54 {
+        format!("...{}", &short[short.len().saturating_sub(51)..])
+    } else {
+        short.to_string()
+    }
+}
+
+fn format_speed(bytes_per_second: u64) -> String {
+    format!("{}/s", format_bytes(bytes_per_second))
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let bytes = bytes as f64;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes / GB)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes / MB)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes / KB)
+    } else {
+        format!("{bytes:.0} B")
     }
 }
 
@@ -521,11 +893,14 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::{BTreeSet, HashMap};
+    use std::io::Write as IoWrite;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
 
     async fn spawn_test_server(
         routes: HashMap<String, Vec<u8>>,
@@ -655,5 +1030,80 @@ mod tests {
         assert!(ids.iter().any(|id| id.starts_with("modrinth:lib-a:")));
         assert!(ids.iter().any(|id| id.starts_with("modrinth:lib-b:")));
         assert!(!ids.iter().any(|id| id.contains("lib-opt")));
+    }
+
+    #[tokio::test]
+    async fn mrpack_index_and_overrides_are_applied() {
+        let root = temp_dir("mrpack");
+        let pack_path = root.join("pack.mrpack");
+        let file = std::fs::File::create(&pack_path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let options = SimpleFileOptions::default();
+        zip.start_file("modrinth.index.json", options).unwrap();
+        zip.write_all(
+            br#"{
+                "formatVersion": 1,
+                "game": "minecraft",
+                "versionId": "1.0.0",
+                "name": "Pack",
+                "files": [
+                    {
+                        "path": "mods/example.jar",
+                        "hashes": {"sha1": "abc"},
+                        "env": {"client": "required", "server": "required"},
+                        "downloads": ["http://example/mod.jar"],
+                        "fileSize": 123
+                    },
+                    {
+                        "path": "mods/server-only.jar",
+                        "hashes": {"sha1": "def"},
+                        "env": {"client": "unsupported", "server": "required"},
+                        "downloads": ["http://example/server.jar"]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        zip.start_file("overrides/options.txt", options).unwrap();
+        zip.write_all(b"guiScale:2").unwrap();
+        zip.start_file("client-overrides/config/client.txt", options)
+            .unwrap();
+        zip.write_all(b"client").unwrap();
+        zip.start_file("server-overrides/config/server.txt", options)
+            .unwrap();
+        zip.write_all(b"server").unwrap();
+        zip.finish().unwrap();
+
+        let index = read_mrpack_index(pack_path.clone()).await.unwrap();
+        assert_eq!(index.files.len(), 2);
+        assert_eq!(index.files[0].path, "mods/example.jar");
+        assert_eq!(index.files[0].file_size, Some(123));
+        assert_eq!(index.files[0].downloads[0], "http://example/mod.jar");
+        assert_eq!(
+            index.files[1].env.client,
+            Some(MrpackSideSupport::Unsupported)
+        );
+
+        let instance = root.join("instance");
+        extract_mrpack_overrides(pack_path, instance.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(instance.join("options.txt")).unwrap(),
+            "guiScale:2"
+        );
+        assert_eq!(
+            std::fs::read_to_string(instance.join("config/client.txt")).unwrap(),
+            "client"
+        );
+        assert!(!instance.join("config/server.txt").exists());
+    }
+
+    #[test]
+    fn safe_instance_child_rejects_escape_paths() {
+        let root = PathBuf::from("/tmp/instance");
+        assert!(safe_instance_child(&root, "mods/example.jar").is_ok());
+        assert!(safe_instance_child(&root, "../evil.jar").is_err());
+        assert!(safe_instance_child(&root, "/absolute.jar").is_err());
     }
 }

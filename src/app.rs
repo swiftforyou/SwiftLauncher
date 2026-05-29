@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use iced::widget::markdown;
 use iced::widget::scrollable::{self, Id as ScrollableId, RelativeOffset};
 use iced::{stream, time, Element, Length, Subscription, Task};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -69,10 +70,15 @@ pub struct SwiftLauncher {
     modrinth_kind: ModrinthKind,
     modrinth_results: Vec<ModrinthProject>,
     modrinth_detail: Option<ModrinthProjectDetail>,
+    modrinth_markdown: Vec<markdown::Item>,
     modrinth_detail_busy: bool,
     modrinth_busy: bool,
     installed_mods: Vec<InstalledMod>,
     mods_loading: bool,
+    modrinth_install_run_id: u64,
+    active_modrinth_install: Option<ActiveModrinthInstall>,
+    modrinth_install_status: String,
+    modrinth_install_progress: f32,
     launch_log: Vec<String>,
     launch_run_id: u64,
     active_launches: Vec<ActiveLaunch>,
@@ -82,6 +88,7 @@ pub struct SwiftLauncher {
     window_width: f32,
     avatar_cache: HashMap<String, PathBuf>,
     launch_status_by_instance: HashMap<String, String>,
+    launch_progress_by_instance: HashMap<String, f32>,
     last_auto_scrolled_log_len: usize,
     adding_account: bool,
 }
@@ -92,6 +99,16 @@ struct ActiveLaunch {
     instance: Instance,
     session: Session,
     stop_tx: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Clone)]
+struct ActiveModrinthInstall {
+    run_id: u64,
+    kind: ModrinthKind,
+    instance_path: PathBuf,
+    minecraft_version: String,
+    loader: LoaderKind,
+    project_id: String,
 }
 
 impl SwiftLauncher {
@@ -146,10 +163,15 @@ impl SwiftLauncher {
             modrinth_kind: ModrinthKind::Mods,
             modrinth_results: Vec::new(),
             modrinth_detail: None,
+            modrinth_markdown: Vec::new(),
             modrinth_detail_busy: false,
             modrinth_busy: false,
             installed_mods: Vec::new(),
             mods_loading: false,
+            modrinth_install_run_id: 0,
+            active_modrinth_install: None,
+            modrinth_install_status: String::new(),
+            modrinth_install_progress: 0.0,
             launch_log: Vec::new(),
             launch_run_id: 0,
             active_launches: Vec::new(),
@@ -159,6 +181,7 @@ impl SwiftLauncher {
             window_width: 1160.0,
             avatar_cache: HashMap::new(),
             launch_status_by_instance: HashMap::new(),
+            launch_progress_by_instance: HashMap::new(),
             last_auto_scrolled_log_len: 0,
             adding_account: false,
         };
@@ -264,6 +287,8 @@ impl SwiftLauncher {
                 self.error_banner = None;
                 if self.create_versions.len() <= crate::instances::create::fallback_versions().len()
                 {
+                    self.create_versions.clear();
+                    self.create_version.clear();
                     Task::perform(
                         crate::instances::create::fetch_available_versions(),
                         Message::VersionsLoaded,
@@ -337,9 +362,10 @@ impl SwiftLauncher {
                 match result {
                     Ok(versions) => {
                         if !versions.is_empty() {
-                            if !versions
-                                .iter()
-                                .any(|version| version == &self.create_version)
+                            if self.create_version.is_empty()
+                                || !versions
+                                    .iter()
+                                    .any(|version| version == &self.create_version)
                             {
                                 self.create_version = versions[0].clone();
                             }
@@ -452,6 +478,8 @@ impl SwiftLauncher {
                 self.create_install_paused = false;
                 match result {
                     Ok(instance) => {
+                        let mut instance = instance;
+                        apply_instance_defaults(&mut instance, &self.settings);
                         if let Some(store) = &self.store {
                             if let Err(error) = InstanceManager::new(store.clone()).save(&instance)
                             {
@@ -556,6 +584,7 @@ impl SwiftLauncher {
                 if let Some(target) = self.instances.iter_mut().find(|instance| instance.id == id) {
                     target.run_state = InstanceRunState::Preparing;
                 }
+                self.launch_progress_by_instance.insert(id.clone(), 0.0);
                 match (instance, session) {
                     (Some(instance), Some(session)) => {
                         let (stop_tx, _) = tokio::sync::watch::channel(false);
@@ -605,7 +634,8 @@ impl SwiftLauncher {
                     })
                 {
                     self.launch_status_by_instance
-                        .insert(instance_id, "Starting process...".into());
+                        .insert(instance_id.clone(), "Starting process...".into());
+                    self.launch_progress_by_instance.insert(instance_id, 1.0);
                     self.push_launch_log(format!("{name} process started (pid {pid})"));
                 }
                 Task::none()
@@ -621,9 +651,21 @@ impl SwiftLauncher {
                     })
                 {
                     self.launch_status_by_instance
-                        .insert(instance_id, "In game".into());
+                        .insert(instance_id.clone(), "In game".into());
+                    self.launch_progress_by_instance.remove(&instance_id);
                     self.push_launch_log(format!("{name} is running"));
                 }
+                Task::none()
+            }
+            Message::LaunchPrepareProgress {
+                instance_id,
+                status,
+                progress,
+            } => {
+                let label = format!("{status} ({:.0}%)", progress * 100.0);
+                self.launch_progress_by_instance
+                    .insert(instance_id.clone(), progress.clamp(0.0, 1.0));
+                self.launch_status_by_instance.insert(instance_id, label);
                 Task::none()
             }
             Message::LaunchFinished(result) => {
@@ -664,6 +706,7 @@ impl SwiftLauncher {
                 self.active_launches
                     .retain(|launch| launch.instance.id != instance_id);
                 self.launch_status_by_instance.remove(&instance_id);
+                self.launch_progress_by_instance.remove(&instance_id);
                 let exit_log;
                 let error_msg;
                 if let Some(instance) = self
@@ -751,6 +794,8 @@ impl SwiftLauncher {
                 {
                     instance.run_state = InstanceRunState::Idle;
                 }
+                self.launch_status_by_instance.remove(&instance_id);
+                self.launch_progress_by_instance.remove(&instance_id);
                 self.error_banner = Some(error.to_string());
                 Task::none()
             }
@@ -846,15 +891,31 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::DeleteInstance(id) => {
-                self.instances.retain(|instance| instance.id != id);
-                if self.selected_instance.as_deref() == Some(id.as_str()) {
-                    self.selected_instance = None;
-                }
-                self.delete_confirm_id = None;
-                if let Some(store) = &self.store {
-                    if let Err(error) = InstanceManager::new(store.clone()).delete(&id) {
-                        self.error_banner = Some(error.to_string());
+                self.remove_instance_metadata(&id);
+                Task::none()
+            }
+            Message::DeleteInstanceWithFiles(id) => {
+                let instance = self
+                    .instances
+                    .iter()
+                    .find(|instance| instance.id == id)
+                    .cloned();
+                self.remove_instance_metadata(&id);
+                match instance {
+                    Some(instance) => Task::perform(
+                        crate::instances::delete_instance_files(instance),
+                        Message::InstanceFilesDeleted,
+                    ),
+                    None => {
+                        self.error_banner = Some("instance missing".into());
+                        Task::none()
                     }
+                }
+            }
+            Message::InstanceFilesDeleted(result) => {
+                match result {
+                    Ok(line) => self.launch_log.push(line),
+                    Err(error) => self.error_banner = Some(error.to_string()),
                 }
                 Task::none()
             }
@@ -966,6 +1027,7 @@ impl SwiftLauncher {
                 self.modrinth_kind = kind;
                 self.modrinth_results.clear();
                 self.modrinth_detail = None;
+                self.modrinth_markdown.clear();
                 Task::none()
             }
             Message::SearchModrinth => {
@@ -994,6 +1056,7 @@ impl SwiftLauncher {
             }
             Message::OpenModrinthProject(project_id) => {
                 self.modrinth_detail = None;
+                self.modrinth_markdown.clear();
                 self.modrinth_detail_busy = true;
                 let kind = self.modrinth_kind;
                 Task::perform(
@@ -1004,13 +1067,17 @@ impl SwiftLauncher {
             Message::ModrinthProjectDetailLoaded(result) => {
                 self.modrinth_detail_busy = false;
                 match result {
-                    Ok(detail) => self.modrinth_detail = Some(detail),
+                    Ok(detail) => {
+                        self.modrinth_markdown = markdown::parse(&detail.body).collect();
+                        self.modrinth_detail = Some(detail);
+                    }
                     Err(error) => self.error_banner = Some(error.to_string()),
                 }
                 Task::none()
             }
             Message::CloseModrinthProject => {
                 self.modrinth_detail = None;
+                self.modrinth_markdown.clear();
                 Task::none()
             }
             Message::InstallModrinthProject(project_id) => {
@@ -1018,23 +1085,39 @@ impl SwiftLauncher {
                     self.error_banner = Some("select an instance first".into());
                     return Task::none();
                 };
+                self.modrinth_install_run_id = self.modrinth_install_run_id.wrapping_add(1);
+                self.active_modrinth_install = Some(ActiveModrinthInstall {
+                    run_id: self.modrinth_install_run_id,
+                    kind: self.modrinth_kind,
+                    instance_path: instance.path,
+                    minecraft_version: instance.minecraft_version,
+                    loader: instance.loader,
+                    project_id,
+                });
+                self.modrinth_install_status = format!("Starting {} install", self.modrinth_kind);
+                self.modrinth_install_progress = 0.01;
                 self.mods_loading = true;
-                Task::perform(
-                    crate::instances::mods::install_modrinth_project(
-                        self.modrinth_kind,
-                        instance.path,
-                        instance.minecraft_version,
-                        instance.loader,
-                        project_id,
-                    ),
-                    Message::ModrinthProjectInstalled,
-                )
+                Task::none()
+            }
+            Message::ModrinthProjectInstallProgress { status, progress } => {
+                self.modrinth_install_status = status;
+                self.modrinth_install_progress = progress;
+                Task::none()
             }
             Message::ModrinthProjectInstalled(result) => {
                 self.mods_loading = false;
+                self.active_modrinth_install = None;
                 match result {
-                    Ok(mods) => self.installed_mods = mods,
-                    Err(error) => self.error_banner = Some(error.to_string()),
+                    Ok(mods) => {
+                        self.installed_mods = mods;
+                        self.modrinth_install_status = "Install complete".into();
+                        self.modrinth_install_progress = 1.0;
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        self.modrinth_install_status = format!("Install failed: {message}");
+                        self.error_banner = Some(message);
+                    }
                 }
                 Task::none()
             }
@@ -1408,6 +1491,7 @@ impl SwiftLauncher {
                         crate::instances::InstanceRunState::Running => Some("Running"),
                         crate::instances::InstanceRunState::Idle => None,
                     });
+                let launch_progress = self.launch_progress_by_instance.get(id).copied();
                 let detail = crate::screens::instance_detail::view(
                     instance,
                     self.selected_tab,
@@ -1419,12 +1503,16 @@ impl SwiftLauncher {
                     self.modrinth_kind,
                     &self.modrinth_results,
                     self.modrinth_detail.as_ref(),
+                    &self.modrinth_markdown,
                     self.modrinth_detail_busy,
                     self.modrinth_busy,
                     &self.installed_mods,
                     self.mods_loading,
+                    &self.modrinth_install_status,
+                    self.modrinth_install_progress,
                     &self.launch_log,
                     launch_status,
+                    launch_progress,
                 );
                 return iced::widget::stack![base, detail]
                     .width(Length::Fill)
@@ -1452,6 +1540,7 @@ impl SwiftLauncher {
                 } else {
                     Some(self.create_loader_version.clone())
                 },
+                self.settings.default_game_dir.clone(),
                 self.create_install_control
                     .as_ref()
                     .map(tokio::sync::watch::Sender::subscribe),
@@ -1472,7 +1561,15 @@ impl SwiftLauncher {
             ));
         }
 
+        if let Some(install) = &self.active_modrinth_install {
+            subscriptions.push(modrinth_install_subscription(install.clone()));
+        }
+
         Subscription::batch(subscriptions)
+    }
+
+    pub fn scale_factor(&self) -> f64 {
+        (self.settings.ui_scale.clamp(75, 150) as f64) / 100.0
     }
 
     fn accept_session(&mut self, session: Session) {
@@ -1596,6 +1693,19 @@ impl SwiftLauncher {
             Message::LoaderVersionsLoaded,
         )
     }
+
+    fn remove_instance_metadata(&mut self, id: &str) {
+        self.instances.retain(|instance| instance.id != id);
+        if self.selected_instance.as_deref() == Some(id) {
+            self.selected_instance = None;
+        }
+        self.delete_confirm_id = None;
+        if let Some(store) = &self.store {
+            if let Err(error) = InstanceManager::new(store.clone()).delete(id) {
+                self.error_banner = Some(error.to_string());
+            }
+        }
+    }
 }
 
 fn microsoft_auth_subscription(id: u64) -> Subscription<Message> {
@@ -1633,6 +1743,7 @@ fn install_subscription(
     version: String,
     loader: LoaderKind,
     loader_version: Option<String>,
+    root: PathBuf,
     control_rx: Option<tokio::sync::watch::Receiver<DownloadControl>>,
 ) -> Subscription<Message> {
     Subscription::run_with_id(
@@ -1642,11 +1753,12 @@ fn install_subscription(
 
             let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
             let install = tokio::spawn(
-                crate::instances::create::create_instance_with_status_and_control(
+                crate::instances::create::create_instance_with_root_and_control(
                     name,
                     version,
                     loader,
                     loader_version,
+                    root,
                     Some(status_tx),
                     control_rx,
                 ),
@@ -1676,6 +1788,47 @@ fn install_subscription(
     )
 }
 
+fn modrinth_install_subscription(install: ActiveModrinthInstall) -> Subscription<Message> {
+    Subscription::run_with_id(
+        ("modrinth-install", install.run_id),
+        stream::channel(100, move |mut output| async move {
+            use iced::futures::SinkExt;
+
+            let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
+            let task = tokio::spawn(
+                crate::instances::mods::install_modrinth_project_with_status(
+                    install.kind,
+                    install.instance_path,
+                    install.minecraft_version,
+                    install.loader,
+                    install.project_id,
+                    Some(status_tx),
+                ),
+            );
+            tokio::pin!(task);
+
+            loop {
+                tokio::select! {
+                    Some(progress) = status_rx.recv() => {
+                        let _ = output.send(Message::ModrinthProjectInstallProgress {
+                            status: progress.status,
+                            progress: progress.progress,
+                        }).await;
+                    }
+                    result = &mut task => {
+                        let message = match result {
+                            Ok(result) => Message::ModrinthProjectInstalled(result),
+                            Err(error) => Message::ModrinthProjectInstalled(Err(AppError::Instance(error.to_string()))),
+                        };
+                        let _ = output.send(message).await;
+                        break;
+                    }
+                }
+            }
+        }),
+    )
+}
+
 fn launch_subscription(
     id: u64,
     instance: Instance,
@@ -1690,24 +1843,50 @@ fn launch_subscription(
 
             let instance_id = instance.id.clone();
             let report_instance = instance.clone();
-            let mut command =
-                match crate::instances::launch::prepare_launch_command(instance, session).await {
-                    Ok((command, java_line)) => {
-                        let _ = output
-                            .send(Message::LaunchOutput {
-                                instance_id: instance_id.clone(),
-                                line: format!("java ready: {java_line}"),
-                            })
-                            .await;
-                        command
+            let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut prepare = tokio::spawn(
+                crate::instances::launch::prepare_launch_command_with_status(
+                    instance,
+                    session,
+                    Some(status_tx),
+                ),
+            );
+            let mut command = loop {
+                tokio::select! {
+                    Some(progress) = status_rx.recv() => {
+                        let _ = output.send(Message::LaunchPrepareProgress {
+                            instance_id: instance_id.clone(),
+                            status: progress.status,
+                            progress: progress.progress,
+                        }).await;
                     }
-                    Err(error) => {
-                        let _ = output
-                            .send(Message::LaunchFailed { instance_id, error })
-                            .await;
-                        return;
+                    result = &mut prepare => {
+                        match result {
+                            Ok(Ok((command, java_line))) => {
+                                let _ = output.send(Message::LaunchOutput {
+                                    instance_id: instance_id.clone(),
+                                    line: format!("java ready: {java_line}"),
+                                }).await;
+                                break command;
+                            }
+                            Ok(Err(error)) => {
+                                let _ = output.send(Message::LaunchFailed {
+                                    instance_id,
+                                    error,
+                                }).await;
+                                return;
+                            }
+                            Err(error) => {
+                                let _ = output.send(Message::LaunchFailed {
+                                    instance_id,
+                                    error: AppError::Process(format!("launch prep task failed: {error}")),
+                                }).await;
+                                return;
+                            }
+                        }
                     }
-                };
+                }
+            };
 
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
             let mut child = match command.spawn() {

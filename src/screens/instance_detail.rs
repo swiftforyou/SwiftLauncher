@@ -1,8 +1,8 @@
 use iced::widget::{
-    button, checkbox, column, container, image, rich_text, row, scrollable, slider, span, text,
-    text_input, Space,
+    button, checkbox, column, container, image, markdown, progress_bar, row, scrollable, slider,
+    text, text_input, Space,
 };
-use iced::{font, Alignment, Element, Font, Length};
+use iced::{Alignment, Element, Length, Theme as IcedTheme};
 
 use crate::icons::{self, icon_button, icon_label_button, svg_icon};
 use crate::instances::mods::{InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail};
@@ -21,12 +21,16 @@ pub fn view<'a>(
     modrinth_kind: ModrinthKind,
     modrinth_results: &'a [ModrinthProject],
     modrinth_detail: Option<&'a ModrinthProjectDetail>,
+    modrinth_markdown: &'a [markdown::Item],
     modrinth_detail_busy: bool,
     modrinth_busy: bool,
     installed_mods: &'a [InstalledMod],
     mods_loading: bool,
+    modrinth_install_status: &'a str,
+    modrinth_install_progress: f32,
     launch_log: &'a [String],
     launch_status: Option<&'a str>,
+    launch_progress: Option<f32>,
 ) -> Element<'a, Message> {
     let mut header_meta = column![
         text_input("Instance name", &instance.name)
@@ -42,6 +46,13 @@ pub fn view<'a>(
     .spacing(8);
     if let Some(status) = launch_status {
         header_meta = header_meta.push(text(format!("Status: {status}")).size(12));
+    }
+    if let Some(progress) = launch_progress {
+        header_meta = header_meta.push(
+            progress_bar(0.0..=1.0, progress)
+                .height(Length::Fixed(5.0))
+                .style(theme::progress),
+        );
     }
 
     let header = row![
@@ -66,7 +77,7 @@ pub fn view<'a>(
     .spacing(8);
 
     let body = match tab {
-        InstanceTab::Overview => overview(instance, launch_log, launch_status),
+        InstanceTab::Overview => overview(instance, launch_log, launch_status, launch_progress),
         InstanceTab::Mods => mods(
             mods_search,
             mod_import_path,
@@ -74,14 +85,17 @@ pub fn view<'a>(
             modrinth_kind,
             modrinth_results,
             modrinth_detail,
+            modrinth_markdown,
             modrinth_detail_busy,
             modrinth_busy,
             installed_mods,
             mods_loading,
+            modrinth_install_status,
+            modrinth_install_progress,
         ),
         InstanceTab::Files => files(instance, export_path, export_busy),
         InstanceTab::Settings => settings(instance),
-        InstanceTab::Logs => logs(launch_log, launch_status),
+        InstanceTab::Logs => logs(launch_log, launch_status, launch_progress),
     };
 
     let body = container(body)
@@ -118,6 +132,7 @@ fn overview<'a>(
     instance: &'a Instance,
     launch_log: &'a [String],
     launch_status: Option<&'a str>,
+    launch_progress: Option<f32>,
 ) -> Element<'a, Message> {
     let last_played = instance
         .last_played_unix
@@ -147,32 +162,50 @@ fn overview<'a>(
         log_preview
     };
 
-    column![
-        row![
-            stat_card("Last played", last_played),
-            stat_card(
-                "Playtime",
-                format!("{} min", instance.playtime_seconds / 60)
-            ),
-            stat_card("State", state_label),
-        ]
-        .spacing(10),
-        text(format!("RAM: {} MB", instance.ram_mb)),
-        slider(512..=16384, instance.ram_mb, Message::RamChanged).step(256_u32),
-        text_input("Java path", &instance.java_path)
-            .on_input(Message::JavaPathChanged)
-            .style(theme::input)
-            .padding(10),
-        text_input("JVM args", &instance.jvm_args)
-            .on_input(Message::JvmArgsChanged)
-            .style(theme::input)
-            .padding(10),
-        container(scrollable(text(log_text).size(11)).height(Length::Fixed(120.0)))
+    let mut content = column![row![
+        stat_card("Last played", last_played),
+        stat_card(
+            "Playtime",
+            format!("{} min", instance.playtime_seconds / 60)
+        ),
+        stat_card("State", state_label),
+    ]
+    .spacing(10),]
+    .spacing(12);
+    if let Some(progress) = launch_progress {
+        content = content.push(
+            container(
+                column![
+                    text("Launch progress").size(12),
+                    progress_bar(0.0..=1.0, progress)
+                        .height(Length::Fixed(6.0))
+                        .style(theme::progress),
+                ]
+                .spacing(8),
+            )
             .padding(12)
             .style(theme::card),
-    ]
-    .spacing(12)
-    .into()
+        );
+    }
+    content = content.push(
+        column![
+            text(format!("RAM: {} MB", instance.ram_mb)),
+            slider(512..=16384, instance.ram_mb, Message::RamChanged).step(256_u32),
+            text_input("Java path", &instance.java_path)
+                .on_input(Message::JavaPathChanged)
+                .style(theme::input)
+                .padding(10),
+            text_input("JVM args", &instance.jvm_args)
+                .on_input(Message::JvmArgsChanged)
+                .style(theme::input)
+                .padding(10),
+            container(scrollable(text(log_text).size(11)).height(Length::Fixed(120.0)))
+                .padding(12)
+                .style(theme::card),
+        ]
+        .spacing(12),
+    );
+    content.into()
 }
 
 fn stat_card(label: &'static str, value: String) -> Element<'static, Message> {
@@ -194,13 +227,22 @@ fn mods<'a>(
     modrinth_kind: ModrinthKind,
     modrinth_results: &'a [ModrinthProject],
     modrinth_detail: Option<&'a ModrinthProjectDetail>,
+    modrinth_markdown: &'a [markdown::Item],
     modrinth_detail_busy: bool,
     modrinth_busy: bool,
     installed_mods: &'a [InstalledMod],
     loading: bool,
+    modrinth_install_status: &'a str,
+    modrinth_install_progress: f32,
 ) -> Element<'a, Message> {
     if let Some(detail) = modrinth_detail {
-        return modrinth_detail_view(detail);
+        return modrinth_detail_view(
+            detail,
+            modrinth_markdown,
+            loading,
+            modrinth_install_status,
+            modrinth_install_progress,
+        );
     }
     if modrinth_detail_busy {
         return loading_row("Loading project...").into();
@@ -213,7 +255,24 @@ fn mods<'a>(
 
     let mut list = column![].spacing(8);
     if loading {
-        list = list.push(loading_row("Reading mods..."));
+        let status = if modrinth_install_status.trim().is_empty() {
+            "Reading mods..."
+        } else {
+            modrinth_install_status
+        };
+        list = list.push(
+            container(
+                column![
+                    loading_row(status),
+                    progress_bar(0.0..=1.0, modrinth_install_progress)
+                        .height(Length::Fixed(6.0))
+                        .style(theme::progress),
+                ]
+                .spacing(8),
+            )
+            .padding(10)
+            .style(theme::card),
+        );
     } else if filtered.is_empty() {
         list = list.push(text("No mods installed").size(13));
     } else {
@@ -343,7 +402,13 @@ fn modrinth_results_view(results: &[ModrinthProject], busy: bool) -> Element<'_,
     list.into()
 }
 
-fn modrinth_detail_view(detail: &ModrinthProjectDetail) -> Element<'_, Message> {
+fn modrinth_detail_view<'a>(
+    detail: &'a ModrinthProjectDetail,
+    parsed_markdown: &'a [markdown::Item],
+    installing: bool,
+    install_status: &'a str,
+    install_progress: f32,
+) -> Element<'a, Message> {
     let mut body = column![row![
         project_icon(detail.icon.as_ref(), 58.0),
         column![
@@ -364,11 +429,31 @@ fn modrinth_detail_view(detail: &ModrinthProjectDetail) -> Element<'_, Message> 
             Message::CloseModrinthProject,
             theme::secondary_button
         ),
-        install_resource_button(detail.project_id.clone()),
+        install_resource_button(detail.project_id.clone(), installing),
     ]
     .spacing(12)
     .align_y(Alignment::Center),]
     .spacing(12);
+
+    if installing {
+        body = body.push(
+            container(
+                column![
+                    loading_row(if install_status.trim().is_empty() {
+                        "Installing..."
+                    } else {
+                        install_status
+                    }),
+                    progress_bar(0.0..=1.0, install_progress)
+                        .height(Length::Fixed(6.0))
+                        .style(theme::progress),
+                ]
+                .spacing(8),
+            )
+            .padding(10)
+            .style(theme::card),
+        );
+    }
 
     if !detail.gallery.is_empty() {
         let mut gallery = row![].spacing(8);
@@ -383,225 +468,43 @@ fn modrinth_detail_view(detail: &ModrinthProjectDetail) -> Element<'_, Message> 
         body = body.push(gallery);
     }
 
-    body = body.push(markdownish(&detail.body));
+    let markdown_body = markdown::view(
+        parsed_markdown,
+        markdown::Settings::with_text_size(13),
+        markdown::Style::from_palette(IcedTheme::Dark.palette()),
+    )
+    .map(|url| Message::OpenExternal(url.to_string()));
+    body = body.push(markdown_body);
     scrollable(container(body).padding([0, 18]).width(Length::Fill))
         .height(Length::Fill)
         .into()
 }
 
-fn install_resource_button(project_id: String) -> iced::widget::Button<'static, Message> {
+fn install_resource_button(
+    project_id: String,
+    installing: bool,
+) -> iced::widget::Button<'static, Message> {
     button(
         row![
             svg_icon(icons::DOWNLOAD, 16.0),
-            text("Install").size(13).color(theme::DARK.palette().crust),
+            text(if installing {
+                "Installing..."
+            } else {
+                "Install"
+            })
+            .size(13)
+            .color(theme::DARK.palette().crust),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
     )
-    .on_press(Message::InstallModrinthProject(project_id))
+    .on_press(if installing {
+        Message::Noop
+    } else {
+        Message::InstallModrinthProject(project_id)
+    })
     .style(theme::primary_button)
     .padding([8, 12])
-}
-
-fn markdownish(markdown: &str) -> Element<'_, Message> {
-    let mut col = column![].spacing(7);
-    for raw in markdown.lines().take(260) {
-        let (line, centered) = normalize_markdown_line(raw);
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(text) = line.strip_prefix("# ") {
-            col = col.push(markdown_line(text, 20, true, centered));
-        } else if let Some(text) = line.strip_prefix("## ") {
-            col = col.push(markdown_line(text, 17, true, centered));
-        } else if let Some(text) = line.strip_prefix("### ") {
-            col = col.push(markdown_line(text, 15, true, centered));
-        } else if let Some(text) = line.strip_prefix("- ") {
-            col = col.push(markdown_line(&format!("- {text}"), 12, false, centered));
-        } else if is_markdown_image_only(line) {
-            col = col.push(text_widget("Image shown in gallery", 11));
-        } else {
-            col = col.push(markdown_line(line, 12, false, centered));
-        }
-    }
-    col.into()
-}
-
-fn markdown_line(raw: &str, size: u16, heading: bool, centered: bool) -> Element<'static, Message> {
-    let mut spans = inline_spans(raw, size);
-    if heading {
-        for item in &mut spans {
-            item.font = Some(Font {
-                weight: font::Weight::Semibold,
-                ..Font::DEFAULT
-            });
-        }
-    }
-    let line: Element<'static, Message> = rich_text(spans).size(size).into();
-    let mut boxed = container(line).width(Length::Fill);
-    if centered {
-        boxed = boxed.center_x(Length::Fill);
-    }
-    boxed.into()
-}
-
-fn inline_spans(input: &str, size: u16) -> Vec<iced::widget::text::Span<'static, Message, Font>> {
-    let clean = clean_markdown_text(&strip_inline_html(&flatten_markdown_links(input)));
-    let mut spans = Vec::new();
-    let mut buf = String::new();
-    let mut bold = false;
-    let mut italic = false;
-    let mut code = false;
-    let mut chars = clean.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '`' {
-            push_span(&mut spans, &mut buf, size, bold, italic, code);
-            code = !code;
-        } else if ch == '*' && chars.peek() == Some(&'*') {
-            let _ = chars.next();
-            push_span(&mut spans, &mut buf, size, bold, italic, code);
-            bold = !bold;
-        } else if ch == '*' {
-            push_span(&mut spans, &mut buf, size, bold, italic, code);
-            italic = !italic;
-        } else {
-            buf.push(ch);
-        }
-    }
-    push_span(&mut spans, &mut buf, size, bold, italic, code);
-    if spans.is_empty() {
-        spans.push(span(" "));
-    }
-    spans
-}
-
-fn is_markdown_image_only(input: &str) -> bool {
-    let trimmed = input.trim();
-    trimmed.starts_with("![") && trimmed.contains("](") && trimmed.ends_with(')')
-}
-
-fn flatten_markdown_links(input: &str) -> String {
-    let mut out = String::new();
-    let bytes = input.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        let is_image = bytes[index] == b'!' && index + 1 < bytes.len() && bytes[index + 1] == b'[';
-        let is_link = bytes[index] == b'[';
-        if is_image || is_link {
-            let label_start = index + if is_image { 2 } else { 1 };
-            if let Some(label_end_rel) = input[label_start..].find(']') {
-                let label_end = label_start + label_end_rel;
-                let after_label = label_end + 1;
-                if input[after_label..].starts_with('(') {
-                    if let Some(url_end_rel) = input[after_label + 1..].find(')') {
-                        let label = &input[label_start..label_end];
-                        if is_image {
-                            if !label.trim().is_empty() {
-                                out.push_str(label.trim());
-                            } else {
-                                out.push_str("Image");
-                            }
-                        } else {
-                            out.push_str(label);
-                        }
-                        index = after_label + 1 + url_end_rel + 1;
-                        continue;
-                    }
-                }
-            }
-        }
-        let Some(ch) = input[index..].chars().next() else {
-            break;
-        };
-        out.push(ch);
-        index += ch.len_utf8();
-    }
-    out
-}
-
-fn push_span(
-    spans: &mut Vec<iced::widget::text::Span<'static, Message, Font>>,
-    buf: &mut String,
-    size: u16,
-    bold: bool,
-    italic: bool,
-    code: bool,
-) {
-    if buf.is_empty() {
-        return;
-    }
-    let mut font = if code { Font::MONOSPACE } else { Font::DEFAULT };
-    if bold {
-        font.weight = font::Weight::Bold;
-    }
-    if italic {
-        font.style = font::Style::Italic;
-    }
-    let mut item = span(std::mem::take(buf)).font(font).size(size);
-    if code {
-        item = item
-            .background(theme::DARK.palette().surface)
-            .padding([1, 4]);
-    }
-    spans.push(item);
-}
-
-fn normalize_markdown_line(raw: &str) -> (String, bool) {
-    let mut line = raw.trim().to_string();
-    let lower = line.to_ascii_lowercase();
-    let centered = lower.contains("<align center>")
-        || lower.contains("<center>")
-        || lower.contains("align=\"center\"")
-        || lower.contains("align='center'");
-    for token in [
-        "<align center>",
-        "</align>",
-        "<center>",
-        "</center>",
-        "<p align=\"center\">",
-        "<p align='center'>",
-        "</p>",
-    ] {
-        line = line.replace(token, "");
-    }
-    (line, centered)
-}
-
-fn strip_inline_html(input: &str) -> String {
-    let mut out = String::new();
-    let mut in_tag = false;
-    for ch in input.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    out
-}
-
-fn clean_markdown_text(input: &str) -> String {
-    input
-        .chars()
-        .map(|ch| match ch {
-            '\u{2018}' | '\u{2019}' => '\'',
-            '\u{201c}' | '\u{201d}' => '"',
-            '\u{2013}' | '\u{2014}' => '-',
-            ch if ch.is_ascii() => ch,
-            ch if ch.is_whitespace() => ' ',
-            _ => ' ',
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn text_widget(content: impl Into<String>, size: u16) -> Element<'static, Message> {
-    text(content.into()).size(size).into()
 }
 
 fn project_icon(icon: Option<&Vec<u8>>, size: f32) -> Element<'_, Message> {
@@ -726,7 +629,11 @@ fn files<'a>(
     .into()
 }
 
-fn logs<'a>(launch_log: &'a [String], launch_status: Option<&str>) -> Element<'a, Message> {
+fn logs<'a>(
+    launch_log: &'a [String],
+    launch_status: Option<&str>,
+    launch_progress: Option<f32>,
+) -> Element<'a, Message> {
     let status_line = launch_status
         .map(|status| format!("Current status: {status}"))
         .unwrap_or_else(|| "Current status: idle".into());
@@ -766,24 +673,31 @@ fn logs<'a>(launch_log: &'a [String], launch_status: Option<&str>) -> Element<'a
             .into()
     };
 
-    column![
-        row![
-            text("Launch log").size(16),
-            Space::with_width(Length::Fill),
-            button("Copy log")
-                .on_press(Message::CopyLogs)
-                .style(theme::secondary_button),
-        ]
-        .align_y(Alignment::Center),
+    let mut layout = column![row![
+        text("Launch log").size(16),
+        Space::with_width(Length::Fill),
+        button("Copy log")
+            .on_press(Message::CopyLogs)
+            .style(theme::secondary_button),
+    ]
+    .align_y(Alignment::Center),]
+    .spacing(10)
+    .height(Length::Fill);
+    if let Some(progress) = launch_progress {
+        layout = layout.push(
+            progress_bar(0.0..=1.0, progress)
+                .height(Length::Fixed(6.0))
+                .style(theme::progress),
+        );
+    }
+    layout = layout.push(
         container(body)
             .padding(12)
             .style(theme::card)
             .width(Length::Fill)
             .height(Length::Fill),
-    ]
-    .spacing(10)
-    .height(Length::Fill)
-    .into()
+    );
+    layout.into()
 }
 
 fn settings(instance: &Instance) -> Element<'_, Message> {

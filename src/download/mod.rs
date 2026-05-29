@@ -120,10 +120,26 @@ pub async fn download_jobs_checked_with_progress_and_control(
     progress_tx: Option<mpsc::UnboundedSender<(usize, usize)>>,
     control_rx: watch::Receiver<DownloadControl>,
 ) -> Result<(), AppError> {
+    download_jobs_checked_with_progress_control_and_events(jobs, progress_tx, control_rx, None)
+        .await
+}
+
+pub async fn download_jobs_checked_with_progress_control_and_events(
+    jobs: Vec<DownloadJob>,
+    progress_tx: Option<mpsc::UnboundedSender<(usize, usize)>>,
+    control_rx: watch::Receiver<DownloadControl>,
+    event_forward_tx: Option<mpsc::UnboundedSender<DownloadEvent>>,
+) -> Result<(), AppError> {
     let client = reqwest::Client::new();
     let limit = Arc::new(Semaphore::new(16));
     let (event_tx, mut event_rx) = mpsc::channel::<DownloadEvent>(1024);
-    let drain = tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
+    let drain = tokio::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            if let Some(tx) = &event_forward_tx {
+                let _ = tx.send(event);
+            }
+        }
+    });
 
     let total = jobs.len();
     let mut completed = 0usize;

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
@@ -42,6 +43,27 @@ pub async fn create_instance_with_status_and_control(
     status_tx: Option<mpsc::UnboundedSender<InstallProgress>>,
     control_rx: Option<tokio::sync::watch::Receiver<DownloadControl>>,
 ) -> Result<Instance, AppError> {
+    create_instance_with_root_and_control(
+        name,
+        version,
+        loader,
+        loader_version_choice,
+        instance_root()?,
+        status_tx,
+        control_rx,
+    )
+    .await
+}
+
+pub async fn create_instance_with_root_and_control(
+    name: String,
+    version: String,
+    loader: LoaderKind,
+    loader_version_choice: Option<String>,
+    root: PathBuf,
+    status_tx: Option<mpsc::UnboundedSender<InstallProgress>>,
+    control_rx: Option<tokio::sync::watch::Receiver<DownloadControl>>,
+) -> Result<Instance, AppError> {
     send_status(&status_tx, "Preparing instance folders", 0.03);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -49,12 +71,13 @@ pub async fn create_instance_with_status_and_control(
         .as_secs();
     let safe_name = sanitize_name(&name);
     let id = format!("{safe_name}-{now}");
-    let path = instance_root()?.join(&id);
+    let path = root.join(&id);
     tokio::fs::create_dir_all(&path).await?;
     tokio::fs::create_dir_all(path.join("mods")).await?;
     tokio::fs::create_dir_all(path.join("logs")).await?;
     tokio::fs::create_dir_all(path.join("screenshots")).await?;
     tokio::fs::create_dir_all(path.join("resourcepacks")).await?;
+    tokio::fs::create_dir_all(path.join("shaderpacks")).await?;
     if let Some(control_rx) = control_rx {
         install::install_minecraft_version_with_status_and_control(
             &version,
@@ -123,7 +146,13 @@ fn sanitize_name(input: &str) -> String {
 
 #[derive(Debug, Deserialize)]
 struct VersionManifest {
+    latest: LatestVersion,
     versions: Vec<ManifestVersion>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LatestVersion {
+    release: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,11 +170,18 @@ pub async fn fetch_available_versions() -> Result<Vec<String>, AppError> {
         .json::<VersionManifest>()
         .await?;
 
-    let versions = response
+    let mut versions = response
         .versions
         .into_iter()
         .map(|version| version.id)
         .collect::<Vec<_>>();
+    if let Some(index) = versions
+        .iter()
+        .position(|version| version == &response.latest.release)
+    {
+        let latest = versions.remove(index);
+        versions.insert(0, latest);
+    }
 
     if versions.is_empty() {
         return Err(AppError::Network(

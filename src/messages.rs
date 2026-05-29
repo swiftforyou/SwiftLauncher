@@ -62,6 +62,11 @@ pub enum Message {
     LaunchReady {
         instance_id: String,
     },
+    LaunchPrepareProgress {
+        instance_id: String,
+        status: String,
+        progress: f32,
+    },
     LaunchFinished(Result<String, AppError>),
     LaunchOutput {
         instance_id: String,
@@ -98,6 +103,8 @@ pub enum Message {
     RequestDeleteInstance(String),
     CancelDeleteInstance,
     DeleteInstance(String),
+    DeleteInstanceWithFiles(String),
+    InstanceFilesDeleted(Result<String, AppError>),
     ModsLoaded(Result<Vec<InstalledMod>, AppError>),
     ModsSearchChanged(String),
     ToggleMod {
@@ -120,6 +127,10 @@ pub enum Message {
     ModrinthProjectDetailLoaded(Result<ModrinthProjectDetail, AppError>),
     CloseModrinthProject,
     InstallModrinthProject(String),
+    ModrinthProjectInstallProgress {
+        status: String,
+        progress: f32,
+    },
     ModrinthProjectInstalled(Result<Vec<InstalledMod>, AppError>),
     AuthProviderSelected(AuthProvider),
     UsernameChanged(String),

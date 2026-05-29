@@ -3,33 +3,34 @@ use iced::{Element, Length};
 
 use crate::messages::Message;
 
-pub const ADD: &str = "assets/icons/add.svg";
-pub const ALERT: &str = "assets/icons/alert.svg";
-pub const ACCOUNT: &str = "assets/icons/account.svg";
-pub const BACK: &str = "assets/icons/back.svg";
-pub const CLOSE: &str = "assets/icons/close.svg";
-pub const CREEPER: &str = "assets/icons/creeper.svg";
-pub const DELETE: &str = "assets/icons/delete.svg";
-pub const DOWNLOAD: &str = "assets/icons/download.svg";
-pub const FOLDER: &str = "assets/icons/folder.svg";
-pub const GRID_VIEW: &str = "assets/icons/grid_view.svg";
-pub const IMPORT: &str = "assets/icons/import.svg";
-pub const LIST_VIEW: &str = "assets/icons/list_view.svg";
-pub const LOGS: &str = "assets/icons/logs.svg";
-pub const MODS: &str = "assets/icons/mods.svg";
-pub const PLAY: &str = "assets/icons/play.svg";
-pub const SETTINGS: &str = "assets/icons/settings.svg";
-pub const STOP: &str = "assets/icons/stop.svg";
+pub const LOGO: &[u8] = include_bytes!("../assets/logo.svg");
+pub const ADD: &[u8] = include_bytes!("../assets/icons/add.svg");
+pub const ALERT: &[u8] = include_bytes!("../assets/icons/alert.svg");
+pub const ACCOUNT: &[u8] = include_bytes!("../assets/icons/account.svg");
+pub const BACK: &[u8] = include_bytes!("../assets/icons/back.svg");
+pub const CLOSE: &[u8] = include_bytes!("../assets/icons/close.svg");
+pub const CREEPER: &[u8] = include_bytes!("../assets/icons/creeper.svg");
+pub const DELETE: &[u8] = include_bytes!("../assets/icons/delete.svg");
+pub const DOWNLOAD: &[u8] = include_bytes!("../assets/icons/download.svg");
+pub const FOLDER: &[u8] = include_bytes!("../assets/icons/folder.svg");
+pub const GRID_VIEW: &[u8] = include_bytes!("../assets/icons/grid_view.svg");
+pub const IMPORT: &[u8] = include_bytes!("../assets/icons/import.svg");
+pub const LIST_VIEW: &[u8] = include_bytes!("../assets/icons/list_view.svg");
+pub const LOGS: &[u8] = include_bytes!("../assets/icons/logs.svg");
+pub const MODS: &[u8] = include_bytes!("../assets/icons/mods.svg");
+pub const PLAY: &[u8] = include_bytes!("../assets/icons/play.svg");
+pub const SETTINGS: &[u8] = include_bytes!("../assets/icons/settings.svg");
+pub const STOP: &[u8] = include_bytes!("../assets/icons/stop.svg");
 
-pub fn svg_icon(path: &'static str, size: f32) -> Element<'static, Message> {
-    svg(svg::Handle::from_path(path))
+pub fn svg_icon(bytes: &'static [u8], size: f32) -> Element<'static, Message> {
+    svg(svg::Handle::from_memory(bytes))
         .width(Length::Fixed(size))
         .height(Length::Fixed(size))
         .into()
 }
 
 pub fn icon_button<'a>(
-    path: &'static str,
+    path: &'static [u8],
     size: f32,
     message: Message,
     style: fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style,
@@ -41,7 +42,7 @@ pub fn icon_button<'a>(
 }
 
 pub fn icon_button_maybe<'a>(
-    path: &'static str,
+    path: &'static [u8],
     size: f32,
     message: Option<Message>,
     style: fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style,
@@ -55,7 +56,7 @@ pub fn icon_button_maybe<'a>(
 }
 
 pub fn icon_label_button<'a>(
-    path: &'static str,
+    path: &'static [u8],
     size: f32,
     label: &'a str,
     message: Message,

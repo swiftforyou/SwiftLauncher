@@ -17,7 +17,7 @@ pub fn view<'a>(
     device: Option<(&'a str, &'a str)>,
     show_back: bool,
 ) -> Element<'a, Message> {
-    let logo = svg(svg::Handle::from_path("assets/logo.svg"))
+    let logo = svg(svg::Handle::from_memory(icons::LOGO))
         .width(72)
         .height(72);
     let mut form = column![

@@ -73,7 +73,7 @@ pub async fn refresh(session: &Session) -> Result<Session, AppError> {
 
 pub async fn validate(session: &Session) -> Result<(), AppError> {
     match session.provider {
-        AuthProvider::Microsoft => Ok(()),
+        AuthProvider::Microsoft => microsoft::validate(session).await,
         AuthProvider::ElyBy => elyby::validate(session).await,
         AuthProvider::LittleSkin => littleskin::validate(session).await,
     }

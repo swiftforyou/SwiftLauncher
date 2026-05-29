@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod app;
 mod auth;
@@ -25,6 +26,7 @@ fn main() -> iced::Result {
     iced::application("Swift Launcher", SwiftLauncher::update, SwiftLauncher::view)
         .subscription(SwiftLauncher::subscription)
         .theme(|app| app.theme.iced_theme())
+        .scale_factor(SwiftLauncher::scale_factor)
         .window(window::Settings {
             size: Size::new(1160.0, 760.0),
             min_size: Some(Size::new(860.0, 560.0)),

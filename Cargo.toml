@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-iced = { version = "=0.13.1", features = ["advanced", "svg", "tokio", "image", "lazy"] }
+iced = { version = "=0.13.1", features = ["advanced", "svg", "tokio", "image", "lazy", "markdown", "highlighter"] }
 tokio = { version = "=1.52.0", features = ["rt-multi-thread", "macros", "fs", "process", "sync", "time"] }
 lighty-core = "=26.5.10"
 lighty-version = "=26.5.10"

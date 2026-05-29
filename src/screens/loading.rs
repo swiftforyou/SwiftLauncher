@@ -1,11 +1,12 @@
 use iced::widget::{column, container, progress_bar, svg, text, Space};
 use iced::{Alignment, Element, Length};
 
+use crate::icons;
 use crate::messages::Message;
 use crate::theme;
 
 pub fn view(progress: f32, status: &str) -> Element<'_, Message> {
-    let logo = svg(svg::Handle::from_path("assets/logo.svg"))
+    let logo = svg(svg::Handle::from_memory(icons::LOGO))
         .width(72)
         .height(72);
     let loading_hint = if progress >= 0.99 {

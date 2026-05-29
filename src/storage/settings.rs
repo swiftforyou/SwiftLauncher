@@ -17,6 +17,8 @@ pub struct LauncherSettings {
     pub default_game_dir: PathBuf,
     pub discord_presence: bool,
     pub crash_reporter: bool,
+    #[serde(default)]
+    pub curseforge_api_key: String,
 }
 
 impl Default for LauncherSettings {
@@ -34,14 +36,26 @@ impl Default for LauncherSettings {
             default_game_dir,
             discord_presence: false,
             crash_reporter: true,
+            curseforge_api_key: bundled_curseforge_api_key(),
         }
     }
 }
 
 pub fn load(store: &SledStore) -> Result<LauncherSettings, AppError> {
-    Ok(store.get(KEY_SETTINGS)?.unwrap_or_default())
+    let mut settings: LauncherSettings = store.get(KEY_SETTINGS)?.unwrap_or_default();
+    if settings.curseforge_api_key.trim().is_empty() {
+        settings.curseforge_api_key = bundled_curseforge_api_key();
+    }
+    Ok(settings)
 }
 
 pub fn save(store: &SledStore, settings: &LauncherSettings) -> Result<(), AppError> {
     store.set(KEY_SETTINGS, settings)
+}
+
+pub fn bundled_curseforge_api_key() -> String {
+    option_env!("SWIFT_LAUNCHER_CURSEFORGE_API_KEY")
+        .map(str::to_owned)
+        .or_else(|| std::env::var("SWIFT_LAUNCHER_CURSEFORGE_API_KEY").ok())
+        .unwrap_or_default()
 }

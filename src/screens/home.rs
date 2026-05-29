@@ -39,6 +39,7 @@ where
         .menu_style(theme::pick_list_menu)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     session: Option<&'a Session>,
     instances: &'a [Instance],
@@ -353,9 +354,9 @@ fn filtered_instances<'a>(
         })
         .collect();
     match sort {
-        SortMode::Name => filtered.sort_by(|a, b| a.name.cmp(&b.name)),
+        SortMode::Name => filtered.sort_by_key(|instance| instance.name.clone()),
         SortMode::LastPlayed => {
-            filtered.sort_by(|a, b| b.last_played_unix.cmp(&a.last_played_unix))
+            filtered.sort_by_key(|instance| std::cmp::Reverse(instance.last_played_unix))
         }
         SortMode::Version => filtered.sort_by(|a, b| a.minecraft_version.cmp(&b.minecraft_version)),
     }
@@ -546,6 +547,7 @@ fn loader_label(loader: LoaderKind) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_instance_overlay<'a>(
     versions: &'a [String],
     loader_versions: &'a [String],
@@ -722,7 +724,7 @@ fn import_instance_overlay(path: &str, busy: bool) -> Element<'_, Message> {
             row![
                 column![
                     text("Import instance").size(22),
-                    text("Choose a Swift Launcher instance zip.").size(13),
+                    text("Choose a Swift zip, Modrinth .mrpack, or Prism/MultiMC zip.").size(13),
                 ]
                 .spacing(4),
                 Space::with_width(Length::Fill),
@@ -734,7 +736,7 @@ fn import_instance_overlay(path: &str, busy: bool) -> Element<'_, Message> {
                 ),
             ]
             .align_y(Alignment::Center),
-            text_input("/path/to/instance.zip", path)
+            text_input("/path/to/instance.zip or pack.mrpack", path)
                 .on_input(Message::ImportPathChanged)
                 .style(theme::input)
                 .padding(12),

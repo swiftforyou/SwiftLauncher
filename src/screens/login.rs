@@ -6,6 +6,7 @@ use crate::icons::{self, svg_icon};
 use crate::messages::Message;
 use crate::theme;
 
+#[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     provider: AuthProvider,
     username: &'a str,

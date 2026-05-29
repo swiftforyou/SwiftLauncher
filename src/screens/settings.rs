@@ -37,6 +37,7 @@ pub fn view<'a>(
         section("Accounts", accounts_section(accounts, active)),
         section("Java", java(settings, java_status)),
         section("Game", game(settings)),
+        section("Integrations", integrations(settings)),
         section("About", about()),
     ]
     .spacing(14)
@@ -168,6 +169,20 @@ fn game(settings: &LauncherSettings) -> Element<'_, Message> {
             .on_toggle(Message::CrashReporterChanged),
     ]
     .spacing(10)
+    .into()
+}
+
+fn integrations(settings: &LauncherSettings) -> Element<'_, Message> {
+    column![
+        text("CurseForge API key").size(13),
+        text_input("Paste key here for CurseForge modpack imports", &settings.curseforge_api_key)
+            .on_input(Message::CurseForgeApiKeyChanged)
+            .secure(true)
+            .style(theme::input)
+            .padding(10),
+        text("Saved locally. Pack players do not need shell exports.").size(12),
+    ]
+    .spacing(8)
     .into()
 }
 

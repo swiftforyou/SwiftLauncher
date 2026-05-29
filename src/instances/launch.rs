@@ -148,9 +148,7 @@ async fn authlib_injector_arg(session: &Session, root: &Path) -> Result<Option<S
         AuthProvider::LittleSkin => "https://littleskin.cn/api/yggdrasil",
     };
     let jar = root.join("authlib").join("authlib-injector.jar");
-    if tokio::fs::metadata(&jar).await.is_err() {
-        download_authlib_injector(&jar).await?;
-    }
+    ensure_authlib_injector(&jar).await?;
     Ok(Some(format!("-javaagent:{}={server}", path_string(&jar))))
 }
 
@@ -168,14 +166,50 @@ struct AuthlibChecksums {
 
 async fn download_authlib_injector(destination: &Path) -> Result<(), AppError> {
     let client = reqwest::Client::new();
-    let artifact = client
-        .get(AUTHLIB_INJECTOR_LATEST_URL)
+    let artifact = fetch_authlib_artifact(&client).await?;
+    download_authlib_artifact(&client, destination, &artifact).await
+}
+
+async fn ensure_authlib_injector(destination: &Path) -> Result<(), AppError> {
+    let client = reqwest::Client::new();
+    let artifact = fetch_authlib_artifact(&client).await?;
+    if authlib_matches(destination, &artifact.checksums.sha256).await? {
+        return Ok(());
+    }
+    download_authlib_artifact(&client, destination, &artifact).await
+}
+
+async fn fetch_authlib_artifact(client: &reqwest::Client) -> Result<AuthlibArtifact, AppError> {
+    Ok(client
+        .get(authlib_latest_url())
         .send()
         .await?
         .error_for_status()?
         .json::<AuthlibArtifact>()
-        .await?;
+        .await?)
+}
 
+fn authlib_latest_url() -> String {
+    std::env::var("SWIFT_LAUNCHER_AUTHLIB_LATEST_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| AUTHLIB_INJECTOR_LATEST_URL.to_string())
+}
+
+async fn authlib_matches(destination: &Path, expected_sha256: &str) -> Result<bool, AppError> {
+    if tokio::fs::metadata(destination).await.is_err() {
+        return Ok(false);
+    }
+    let bytes = tokio::fs::read(destination).await?;
+    Ok(sha256_hex(&bytes) == expected_sha256.to_lowercase())
+}
+
+async fn download_authlib_artifact(
+    client: &reqwest::Client,
+    destination: &Path,
+    artifact: &AuthlibArtifact,
+) -> Result<(), AppError> {
     if let Some(parent) = destination.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -210,6 +244,130 @@ fn sha256_hex(bytes: &[u8]) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn spawn_test_server(
+        routes: HashMap<String, Vec<u8>>,
+    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let routes = Arc::new(routes);
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_for_task = hits.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = match listener.accept().await {
+                    Ok(value) => value,
+                    Err(_) => break,
+                };
+                hits_for_task.fetch_add(1, Ordering::Relaxed);
+                let mut buf = [0u8; 2048];
+                let Ok(n) = socket.read(&mut buf).await else {
+                    continue;
+                };
+                if n == 0 {
+                    continue;
+                }
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let path = path.split('?').next().unwrap_or("/");
+                if let Some(body) = routes.get(path) {
+                    let response =
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.write_all(body).await;
+                } else {
+                    let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+            }
+        });
+        (format!("http://{}", addr), hits, handle)
+    }
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("swift-launcher-test-{prefix}-{pid}-{now}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn authlib_matches_sha256() {
+        let dir = temp_dir("authlib-match");
+        let jar = dir.join("authlib-injector.jar");
+        tokio::fs::write(&jar, b"good-jar").await.unwrap();
+        assert!(authlib_matches(&jar, &sha256_hex(b"good-jar"))
+            .await
+            .unwrap());
+        assert!(!authlib_matches(&jar, &sha256_hex(b"bad-jar"))
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn authlib_redownloads_corrupt_existing_jar() {
+        let dir = temp_dir("authlib-redownload");
+        let jar = dir.join("authlib-injector.jar");
+        tokio::fs::write(&jar, b"corrupt").await.unwrap();
+        let good = b"good-jar".to_vec();
+        let latest = serde_json::json!({
+            "download_url": "http://placeholder/authlib.jar",
+            "checksums": {"sha256": sha256_hex(&good)}
+        })
+        .to_string();
+
+        let mut routes = HashMap::new();
+        routes.insert("/latest.json".to_string(), latest.into_bytes());
+        routes.insert("/authlib.jar".to_string(), good.clone());
+        let (base, hits, handle) = spawn_test_server(routes).await;
+        let artifact = AuthlibArtifact {
+            download_url: format!("{base}/authlib.jar"),
+            checksums: AuthlibChecksums {
+                sha256: sha256_hex(&good),
+            },
+        };
+
+        ensure_authlib_injector_with_artifact(&jar, artifact)
+            .await
+            .unwrap();
+        handle.abort();
+
+        assert_eq!(tokio::fs::read(&jar).await.unwrap(), good);
+        assert!(hits.load(Ordering::Relaxed) >= 1);
+    }
+
+    async fn ensure_authlib_injector_with_artifact(
+        destination: &Path,
+        artifact: AuthlibArtifact,
+    ) -> Result<(), AppError> {
+        let client = reqwest::Client::new();
+        if authlib_matches(destination, &artifact.checksums.sha256).await? {
+            return Ok(());
+        }
+        download_authlib_artifact(&client, destination, &artifact).await
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -430,10 +588,10 @@ fn build_arguments(
         .split_whitespace()
         .map(|arg| variables.apply(arg))
         .collect::<Vec<_>>();
-    let jvm = vec![
-        "-Djava.library.path=${natives_directory}".into(),
-        "-cp".into(),
-        "${classpath}".into(),
+    let jvm = [
+        "-Djava.library.path=${natives_directory}",
+        "-cp",
+        "${classpath}",
     ]
     .into_iter()
     .map(|arg| variables.apply(arg))

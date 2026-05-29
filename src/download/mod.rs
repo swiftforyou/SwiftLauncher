@@ -220,20 +220,33 @@ async fn cleanup_job_files(job: &DownloadJob) {
                 return;
             }
         }
+        if let Some(expected_size) = job.size_bytes {
+            match tokio::fs::metadata(&job.destination_path).await {
+                Ok(meta) if meta.len() == expected_size => {}
+                _ => {
+                    let _ = tokio::fs::remove_file(&job.destination_path).await;
+                }
+            }
+        }
     }
 }
 
 async fn job_is_valid(job: &DownloadJob) -> Result<bool, AppError> {
-    if tokio::fs::metadata(&job.destination_path).await.is_err() {
-        return Ok(false);
-    }
+    let metadata = match tokio::fs::metadata(&job.destination_path).await {
+        Ok(metadata) => metadata,
+        Err(_) => return Ok(false),
+    };
 
     if let Some(expected_sha1) = &job.expected_sha1 {
         let actual = assets::sha1_file(&job.destination_path).await?;
         return Ok(&actual == expected_sha1);
     }
 
-    Ok(true)
+    if let Some(expected_size) = job.size_bytes {
+        return Ok(metadata.len() == expected_size);
+    }
+
+    Ok(false)
 }
 
 async fn download_one(
@@ -493,5 +506,31 @@ mod tests {
         assert!(saw_complete);
         let bytes = tokio::fs::read(&destination).await.unwrap();
         assert_eq!(bytes, b"hello-world");
+    }
+
+    #[tokio::test]
+    async fn no_sha1_uses_size_for_cache_validation() {
+        let target_dir = temp_dir("download-size");
+        let destination = target_dir.join("file.bin");
+        tokio::fs::write(&destination, b"partial").await.unwrap();
+        let sized_job = DownloadJob {
+            id: "job-sized".to_string(),
+            url: "http://example/file.bin".to_string(),
+            destination_path: destination.clone(),
+            expected_sha1: None,
+            size_bytes: Some(11),
+        };
+        assert!(!job_is_valid(&sized_job).await.unwrap());
+
+        tokio::fs::write(&destination, b"hello-world")
+            .await
+            .unwrap();
+        assert!(job_is_valid(&sized_job).await.unwrap());
+
+        let unknown_size_job = DownloadJob {
+            size_bytes: None,
+            ..sized_job
+        };
+        assert!(!job_is_valid(&unknown_size_job).await.unwrap());
     }
 }

@@ -262,10 +262,7 @@ mod tests {
 
     fn decode_chunked(mut input: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
-        loop {
-            let Some(line_end) = find_crlf(input) else {
-                break;
-            };
+        while let Some(line_end) = find_crlf(input) {
             let size_str = String::from_utf8_lossy(&input[..line_end]);
             let size = usize::from_str_radix(size_str.trim(), 16).unwrap_or(0);
             let rest = &input[line_end + 2..];
@@ -350,7 +347,7 @@ mod tests {
                 }
             }
 
-            let header_end = header_end.unwrap_or_else(|| data.len());
+            let header_end = header_end.unwrap_or(data.len());
             let headers = String::from_utf8_lossy(&data[..header_end]);
             let path = headers
                 .lines()
@@ -419,7 +416,7 @@ mod tests {
         assert_eq!(value["agent"]["name"], "Minecraft");
         assert_eq!(value["agent"]["version"], 1);
         assert_eq!(value["requestUser"], true);
-        assert!(value["clientToken"].as_str().unwrap_or_default().len() > 0);
+        assert!(!value["clientToken"].as_str().unwrap_or_default().is_empty());
 
         assert_eq!(session.username, "Steve");
         assert_eq!(session.uuid, "uuid");

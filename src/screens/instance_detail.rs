@@ -1,15 +1,18 @@
 use iced::widget::{
-    button, checkbox, column, container, image, markdown, progress_bar, row, scrollable, slider,
-    text, text_input, Space,
+    button, checkbox, column, container, image, markdown, pick_list, progress_bar, row, scrollable,
+    slider, text, text_input, Space,
 };
-use iced::{Alignment, Element, Length, Theme as IcedTheme};
+use iced::{Alignment, Element, Font, Length, Theme as IcedTheme};
 
 use crate::icons::{self, icon_button, icon_label_button, svg_icon};
-use crate::instances::mods::{InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail};
+use crate::instances::mods::{
+    InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail, ResourceProvider,
+};
 use crate::instances::{Instance, InstanceRunState, InstanceTab};
 use crate::messages::Message;
 use crate::theme;
 
+#[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     instance: &'a Instance,
     tab: InstanceTab,
@@ -18,6 +21,7 @@ pub fn view<'a>(
     export_path: &'a str,
     export_busy: bool,
     modrinth_query: &'a str,
+    resource_provider: ResourceProvider,
     modrinth_kind: ModrinthKind,
     modrinth_results: &'a [ModrinthProject],
     modrinth_detail: Option<&'a ModrinthProjectDetail>,
@@ -25,6 +29,8 @@ pub fn view<'a>(
     modrinth_detail_busy: bool,
     modrinth_busy: bool,
     installed_mods: &'a [InstalledMod],
+    mod_categories: &'a [String],
+    new_mod_category: &'a str,
     mods_loading: bool,
     modrinth_install_status: &'a str,
     modrinth_install_progress: f32,
@@ -82,6 +88,7 @@ pub fn view<'a>(
             mods_search,
             mod_import_path,
             modrinth_query,
+            resource_provider,
             modrinth_kind,
             modrinth_results,
             modrinth_detail,
@@ -89,6 +96,8 @@ pub fn view<'a>(
             modrinth_detail_busy,
             modrinth_busy,
             installed_mods,
+            mod_categories,
+            new_mod_category,
             mods_loading,
             modrinth_install_status,
             modrinth_install_progress,
@@ -199,9 +208,12 @@ fn overview<'a>(
                 .on_input(Message::JvmArgsChanged)
                 .style(theme::input)
                 .padding(10),
-            container(scrollable(text(log_text).size(11)).height(Length::Fixed(120.0)))
-                .padding(12)
-                .style(theme::card),
+            container(
+                scrollable(text(log_text).size(11).font(Font::MONOSPACE))
+                    .height(Length::Fixed(120.0)),
+            )
+            .padding(12)
+            .style(theme::card),
         ]
         .spacing(12),
     );
@@ -220,10 +232,12 @@ fn stat_card(label: &'static str, value: String) -> Element<'static, Message> {
     .into()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mods<'a>(
     mods_search: &'a str,
     mod_import_path: &'a str,
     modrinth_query: &'a str,
+    resource_provider: ResourceProvider,
     modrinth_kind: ModrinthKind,
     modrinth_results: &'a [ModrinthProject],
     modrinth_detail: Option<&'a ModrinthProjectDetail>,
@@ -231,6 +245,8 @@ fn mods<'a>(
     modrinth_detail_busy: bool,
     modrinth_busy: bool,
     installed_mods: &'a [InstalledMod],
+    mod_categories: &'a [String],
+    new_mod_category: &'a str,
     loading: bool,
     modrinth_install_status: &'a str,
     modrinth_install_progress: f32,
@@ -245,7 +261,7 @@ fn mods<'a>(
         );
     }
     if modrinth_detail_busy {
-        return loading_row("Loading project...").into();
+        return loading_row("Loading project...");
     }
     let search = mods_search.to_lowercase();
     let filtered = installed_mods
@@ -276,15 +292,30 @@ fn mods<'a>(
     } else if filtered.is_empty() {
         list = list.push(text("No mods installed").size(13));
     } else {
+        let mut current_category = String::new();
         for item in filtered {
-            list = list.push(mod_row(item));
+            if item.category != current_category {
+                current_category = item.category.clone();
+                list = list.push(text(current_category.clone()).size(15));
+            }
+            list = list.push(mod_row(item, mod_categories));
         }
     }
 
     let content = column![
+        row![
+            pick_list(
+                ResourceProvider::ALL,
+                Some(resource_provider),
+                Message::ResourceProviderSelected
+            )
+            .style(theme::pick_list)
+            .menu_style(theme::pick_list_menu),
+            Space::with_width(Length::Fill),
+        ],
         modrinth_kind_selector(modrinth_kind),
         row![
-            text_input("Search Modrinth", modrinth_query)
+            text_input("Search resources", modrinth_query)
                 .on_input(Message::ModrinthSearchChanged)
                 .style(theme::input)
                 .padding(10),
@@ -308,6 +339,16 @@ fn mods<'a>(
                 .style(theme::input)
                 .padding(10),
             icon_button(icons::ADD, 18.0, Message::AddMod, theme::primary_button),
+        ]
+        .spacing(8),
+        row![
+            text_input("New category", new_mod_category)
+                .on_input(Message::ModCategoryNameChanged)
+                .style(theme::input)
+                .padding(10),
+            button("Add Category")
+                .on_press(Message::AddModCategory)
+                .style(theme::secondary_button),
         ]
         .spacing(8),
         row![
@@ -535,10 +576,11 @@ fn format_downloads(downloads: u64) -> String {
     }
 }
 
-fn mod_row(item: &InstalledMod) -> Element<'_, Message> {
+fn mod_row<'a>(item: &'a InstalledMod, categories: &'a [String]) -> Element<'a, Message> {
     let id = item.id.clone();
     container(
         row![
+            project_icon(item.icon.as_ref(), 34.0),
             checkbox("", item.enabled).on_toggle(move |enabled| Message::ToggleMod {
                 mod_id: id.clone(),
                 enabled
@@ -554,6 +596,19 @@ fn mod_row(item: &InstalledMod) -> Element<'_, Message> {
             ]
             .spacing(2),
             Space::with_width(Length::Fill),
+            pick_list(
+                categories.to_vec(),
+                Some(item.category.clone()),
+                {
+                    let mod_id = item.id.clone();
+                    move |category| Message::ModCategoryChanged {
+                        mod_id: mod_id.clone(),
+                        category,
+                    }
+                }
+            )
+            .style(theme::pick_list)
+            .menu_style(theme::pick_list_menu),
             icon_button(
                 icons::DELETE,
                 16.0,
@@ -662,7 +717,7 @@ fn logs<'a>(
                 theme::DARK.palette().text
             };
             col = col.push(
-                container(text(line).size(11).color(style))
+                container(text(line).size(11).font(Font::MONOSPACE).color(style))
                     .padding([2, 0])
                     .width(Length::Fill),
             );

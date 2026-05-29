@@ -11,7 +11,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::auth::{AuthProvider, Session};
 use crate::download::DownloadControl;
 use crate::error::AppError;
-use crate::instances::mods::{InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail};
+use crate::instances::mods::{
+    InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail, ResourceProvider,
+};
 use crate::instances::{
     Instance, InstanceManager, InstanceRunState, InstanceTab, LoaderKind, SortMode,
 };
@@ -67,6 +69,7 @@ pub struct SwiftLauncher {
     mods_search: String,
     mod_import_path: String,
     modrinth_query: String,
+    resource_provider: ResourceProvider,
     modrinth_kind: ModrinthKind,
     modrinth_results: Vec<ModrinthProject>,
     modrinth_detail: Option<ModrinthProjectDetail>,
@@ -74,12 +77,15 @@ pub struct SwiftLauncher {
     modrinth_detail_busy: bool,
     modrinth_busy: bool,
     installed_mods: Vec<InstalledMod>,
+    mod_categories: Vec<String>,
+    new_mod_category: String,
     mods_loading: bool,
     modrinth_install_run_id: u64,
     active_modrinth_install: Option<ActiveModrinthInstall>,
     modrinth_install_status: String,
     modrinth_install_progress: f32,
     launch_log: Vec<String>,
+    launch_logs_by_instance: HashMap<String, Vec<String>>,
     launch_run_id: u64,
     active_launches: Vec<ActiveLaunch>,
     account_menu_open: bool,
@@ -104,6 +110,8 @@ struct ActiveLaunch {
 #[derive(Clone)]
 struct ActiveModrinthInstall {
     run_id: u64,
+    provider: ResourceProvider,
+    curseforge_api_key: String,
     kind: ModrinthKind,
     instance_path: PathBuf,
     minecraft_version: String,
@@ -160,6 +168,7 @@ impl SwiftLauncher {
             mods_search: String::new(),
             mod_import_path: String::new(),
             modrinth_query: String::new(),
+            resource_provider: ResourceProvider::Modrinth,
             modrinth_kind: ModrinthKind::Mods,
             modrinth_results: Vec::new(),
             modrinth_detail: None,
@@ -167,12 +176,15 @@ impl SwiftLauncher {
             modrinth_detail_busy: false,
             modrinth_busy: false,
             installed_mods: Vec::new(),
+            mod_categories: crate::instances::mods::default_mod_categories(),
+            new_mod_category: String::new(),
             mods_loading: false,
             modrinth_install_run_id: 0,
             active_modrinth_install: None,
             modrinth_install_status: String::new(),
             modrinth_install_progress: 0.0,
             launch_log: Vec::new(),
+            launch_logs_by_instance: HashMap::new(),
             launch_run_id: 0,
             active_launches: Vec::new(),
             account_menu_open: false,
@@ -255,10 +267,18 @@ impl SwiftLauncher {
                     self.loading_progress = (self.loading_progress + 0.01).max(wave).min(0.94);
                 }
                 if self.selected_tab == InstanceTab::Logs
-                    && self.selected_instance.is_some()
-                    && self.last_auto_scrolled_log_len != self.launch_log.len()
+                    && self
+                        .selected_instance
+                        .as_ref()
+                        .and_then(|id| self.launch_logs_by_instance.get(id))
+                        .is_some_and(|log| self.last_auto_scrolled_log_len != log.len())
                 {
-                    self.last_auto_scrolled_log_len = self.launch_log.len();
+                    self.last_auto_scrolled_log_len = self
+                        .selected_instance
+                        .as_ref()
+                        .and_then(|id| self.launch_logs_by_instance.get(id))
+                        .map(Vec::len)
+                        .unwrap_or_default();
                     return scrollable::snap_to(
                         ScrollableId::new("launch-log-scroll"),
                         RelativeOffset::END,
@@ -304,7 +324,10 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::PickImportZip => Task::perform(
-                crate::system::pick_file("Import Swift instance", vec![("Zip", vec!["zip"])]),
+                crate::system::pick_file(
+                    "Import instance or modpack",
+                    vec![("Instance archives", vec!["zip", "mrpack"])],
+                ),
                 |path| {
                     Message::ImportPathChanged(
                         path.map(|path| path.display().to_string())
@@ -324,9 +347,12 @@ impl SwiftLauncher {
                     self.error_banner = Some("enter an instance zip path first".into());
                     return Task::none();
                 }
+                let import_options = crate::instances::archive::ImportOptions {
+                    curseforge_api_key: self.settings.curseforge_api_key.trim().to_string(),
+                };
                 self.import_busy = true;
                 Task::perform(
-                    crate::instances::archive::import_instance(path),
+                    crate::instances::archive::import_instance(path, import_options),
                     Message::InstanceImported,
                 )
             }
@@ -502,11 +528,13 @@ impl SwiftLauncher {
             Message::SelectInstance(id) => {
                 self.selected_instance = Some(id);
                 self.selected_tab = InstanceTab::Overview;
+                self.last_auto_scrolled_log_len = 0;
                 Task::none()
             }
             Message::OpenInstanceTab(id, tab) => {
                 self.selected_instance = Some(id);
                 self.selected_tab = tab;
+                self.last_auto_scrolled_log_len = 0;
                 if tab == InstanceTab::Mods {
                     self.load_selected_mods()
                 } else {
@@ -519,6 +547,7 @@ impl SwiftLauncher {
             }
             Message::SelectInstanceTab(tab) => {
                 self.selected_tab = tab;
+                self.last_auto_scrolled_log_len = 0;
                 if tab == InstanceTab::Mods {
                     self.load_selected_mods()
                 } else {
@@ -589,8 +618,12 @@ impl SwiftLauncher {
                     (Some(instance), Some(session)) => {
                         let (stop_tx, _) = tokio::sync::watch::channel(false);
                         self.launch_run_id = self.launch_run_id.wrapping_add(1);
-                        self.launch_log
-                            .push(format!("preparing launch: {}", instance.name));
+                        self.launch_logs_by_instance
+                            .insert(instance.id.clone(), Vec::new());
+                        self.push_instance_launch_log(
+                            &instance.id,
+                            format!("preparing launch: {}", instance.name),
+                        );
                         self.active_launches.push(ActiveLaunch {
                             run_id: self.launch_run_id,
                             instance,
@@ -635,8 +668,12 @@ impl SwiftLauncher {
                 {
                     self.launch_status_by_instance
                         .insert(instance_id.clone(), "Starting process...".into());
-                    self.launch_progress_by_instance.insert(instance_id, 1.0);
-                    self.push_launch_log(format!("{name} process started (pid {pid})"));
+                    self.launch_progress_by_instance
+                        .insert(instance_id.clone(), 1.0);
+                    self.push_instance_launch_log(
+                        &instance_id,
+                        format!("{name} process started (pid {pid})"),
+                    );
                 }
                 Task::none()
             }
@@ -653,7 +690,7 @@ impl SwiftLauncher {
                     self.launch_status_by_instance
                         .insert(instance_id.clone(), "In game".into());
                     self.launch_progress_by_instance.remove(&instance_id);
-                    self.push_launch_log(format!("{name} is running"));
+                    self.push_instance_launch_log(&instance_id, format!("{name} is running"));
                 }
                 Task::none()
             }
@@ -679,19 +716,13 @@ impl SwiftLauncher {
                     }
                 }
                 match result {
-                    Ok(line) => self.launch_log.push(line),
+                    Ok(line) => self.push_launch_log(line),
                     Err(error) => self.error_banner = Some(error.to_string()),
                 }
                 Task::none()
             }
             Message::LaunchOutput { instance_id, line } => {
-                let name = self
-                    .instances
-                    .iter()
-                    .find(|instance| instance.id == instance_id)
-                    .map(|instance| instance.name.as_str())
-                    .unwrap_or("launch");
-                self.push_launch_log(format!("[{name}] {line}"));
+                self.push_instance_launch_log(&instance_id, line);
                 Task::none()
             }
             Message::LaunchExited {
@@ -739,7 +770,10 @@ impl SwiftLauncher {
                     exit_log = format!("{name} {verb}: {status} ({runtime_seconds}s total)");
                     error_msg = if !success {
                         let tail = self
-                            .launch_log
+                            .launch_logs_by_instance
+                            .get(&instance_id)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default()
                             .iter()
                             .rev()
                             .take(3)
@@ -761,7 +795,7 @@ impl SwiftLauncher {
                     exit_log = format!("launch ended: {status}");
                     error_msg = None;
                 }
-                self.push_launch_log(exit_log);
+                self.push_instance_launch_log(&instance_id, exit_log);
                 if let Some(message) = error_msg {
                     self.error_banner = Some(message);
                 }
@@ -776,7 +810,10 @@ impl SwiftLauncher {
                 }
                 if let Some(result) = crash_report {
                     match result {
-                        Ok(path) => self.launch_log.push(format!("crash report saved: {path}")),
+                        Ok(path) => self.push_instance_launch_log(
+                            &instance_id,
+                            format!("crash report saved: {path}"),
+                        ),
                         Err(error) => {
                             self.error_banner = Some(format!("crash report failed: {error}"))
                         }
@@ -800,12 +837,11 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::LaunchLog(line) => {
-                self.launch_log.push(line);
+                self.push_launch_log(line);
                 Task::none()
             }
             Message::AssetsVerified { current, total } => {
-                self.launch_log
-                    .push(format!("assets verified {current}/{total}"));
+                self.push_launch_log(format!("assets verified {current}/{total}"));
                 Task::none()
             }
             Message::OpenInstanceFiles(id) => self.open_instance_path_task(&id, ""),
@@ -821,7 +857,7 @@ impl SwiftLauncher {
             }
             Message::PathOpened(result) => {
                 match result {
-                    Ok(line) => self.launch_log.push(line),
+                    Ok(line) => self.push_launch_log(line),
                     Err(error) => self.error_banner = Some(error.to_string()),
                 }
                 Task::none()
@@ -877,7 +913,7 @@ impl SwiftLauncher {
             Message::InstanceExported(result) => {
                 self.export_busy = false;
                 match result {
-                    Ok(path) => self.launch_log.push(format!("instance exported: {path}")),
+                    Ok(path) => self.push_launch_log(format!("instance exported: {path}")),
                     Err(error) => self.error_banner = Some(error.to_string()),
                 }
                 Task::none()
@@ -914,7 +950,7 @@ impl SwiftLauncher {
             }
             Message::InstanceFilesDeleted(result) => {
                 match result {
-                    Ok(line) => self.launch_log.push(line),
+                    Ok(line) => self.push_launch_log(line),
                     Err(error) => self.error_banner = Some(error.to_string()),
                 }
                 Task::none()
@@ -922,7 +958,10 @@ impl SwiftLauncher {
             Message::ModsLoaded(result) => {
                 self.mods_loading = false;
                 match result {
-                    Ok(mods) => self.installed_mods = mods,
+                    Ok(mods) => {
+                        self.mod_categories = crate::instances::mods::categories_from_installed(&mods);
+                        self.installed_mods = mods;
+                    }
                     Err(error) => self.error_banner = Some(error.to_string()),
                 }
                 Task::none()
@@ -945,7 +984,10 @@ impl SwiftLauncher {
             Message::ModToggled(result) => {
                 self.mods_loading = false;
                 match result {
-                    Ok(mods) => self.installed_mods = mods,
+                    Ok(mods) => {
+                        self.mod_categories = crate::instances::mods::categories_from_installed(&mods);
+                        self.installed_mods = mods;
+                    }
                     Err(error) => self.error_banner = Some(error.to_string()),
                 }
                 Task::none()
@@ -964,14 +1006,17 @@ impl SwiftLauncher {
             Message::ModDeleted(result) => {
                 self.mods_loading = false;
                 match result {
-                    Ok(mods) => self.installed_mods = mods,
+                    Ok(mods) => {
+                        self.mod_categories = crate::instances::mods::categories_from_installed(&mods);
+                        self.installed_mods = mods;
+                    }
                     Err(error) => self.error_banner = Some(error.to_string()),
                 }
                 Task::none()
             }
             Message::AddMod => {
                 self.mod_import_path.clear();
-                self.launch_log.push("add mod path input opened".into());
+                self.push_launch_log("add mod path input opened".into());
                 Task::none()
             }
             Message::PickModJar => Task::perform(
@@ -1012,6 +1057,7 @@ impl SwiftLauncher {
                 self.mods_loading = false;
                 match result {
                     Ok(mods) => {
+                        self.mod_categories = crate::instances::mods::categories_from_installed(&mods);
                         self.installed_mods = mods;
                         self.mod_import_path.clear();
                     }
@@ -1021,6 +1067,13 @@ impl SwiftLauncher {
             }
             Message::ModrinthSearchChanged(value) => {
                 self.modrinth_query = value;
+                Task::none()
+            }
+            Message::ResourceProviderSelected(provider) => {
+                self.resource_provider = provider;
+                self.modrinth_results.clear();
+                self.modrinth_detail = None;
+                self.modrinth_markdown.clear();
                 Task::none()
             }
             Message::ModrinthKindSelected(kind) => {
@@ -1037,7 +1090,9 @@ impl SwiftLauncher {
                 };
                 self.modrinth_busy = true;
                 Task::perform(
-                    crate::instances::mods::search_modrinth(
+                    crate::instances::mods::search_resources(
+                        self.resource_provider,
+                        self.settings.curseforge_api_key.clone(),
                         self.modrinth_query.clone(),
                         instance.minecraft_version,
                         instance.loader,
@@ -1059,8 +1114,12 @@ impl SwiftLauncher {
                 self.modrinth_markdown.clear();
                 self.modrinth_detail_busy = true;
                 let kind = self.modrinth_kind;
+                let provider = self.resource_provider;
+                let api_key = self.settings.curseforge_api_key.clone();
                 Task::perform(
-                    crate::instances::mods::modrinth_project_detail(project_id, kind),
+                    crate::instances::mods::resource_project_detail(
+                        provider, api_key, project_id, kind,
+                    ),
                     Message::ModrinthProjectDetailLoaded,
                 )
             }
@@ -1086,15 +1145,27 @@ impl SwiftLauncher {
                     return Task::none();
                 };
                 self.modrinth_install_run_id = self.modrinth_install_run_id.wrapping_add(1);
+                let provider = self
+                    .modrinth_detail
+                    .as_ref()
+                    .map(|detail| detail.provider)
+                    .unwrap_or(self.resource_provider);
+                let kind = self
+                    .modrinth_detail
+                    .as_ref()
+                    .map(|detail| detail.kind)
+                    .unwrap_or(self.modrinth_kind);
                 self.active_modrinth_install = Some(ActiveModrinthInstall {
                     run_id: self.modrinth_install_run_id,
-                    kind: self.modrinth_kind,
+                    provider,
+                    curseforge_api_key: self.settings.curseforge_api_key.clone(),
+                    kind,
                     instance_path: instance.path,
                     minecraft_version: instance.minecraft_version,
                     loader: instance.loader,
                     project_id,
                 });
-                self.modrinth_install_status = format!("Starting {} install", self.modrinth_kind);
+                self.modrinth_install_status = format!("Starting {kind} install");
                 self.modrinth_install_progress = 0.01;
                 self.mods_loading = true;
                 Task::none()
@@ -1109,6 +1180,7 @@ impl SwiftLauncher {
                 self.active_modrinth_install = None;
                 match result {
                     Ok(mods) => {
+                        self.mod_categories = crate::instances::mods::categories_from_installed(&mods);
                         self.installed_mods = mods;
                         self.modrinth_install_status = "Install complete".into();
                         self.modrinth_install_progress = 1.0;
@@ -1120,6 +1192,46 @@ impl SwiftLauncher {
                     }
                 }
                 Task::none()
+            }
+            Message::ModCategoryNameChanged(value) => {
+                self.new_mod_category = value;
+                Task::none()
+            }
+            Message::AddModCategory => {
+                let Some(path) = self.selected_instance_path() else {
+                    self.error_banner = Some("select an instance first".into());
+                    return Task::none();
+                };
+                let category = self.new_mod_category.trim().to_string();
+                if category.is_empty() {
+                    return Task::none();
+                }
+                if !self.mod_categories.iter().any(|item| item == &category) {
+                    self.mod_categories.push(category.clone());
+                    self.mod_categories.sort();
+                }
+                self.new_mod_category.clear();
+                Task::perform(
+                    crate::instances::mods::add_mod_category(path, category),
+                    Message::ModCategoryAdded,
+                )
+            }
+            Message::ModCategoryAdded(result) => {
+                if let Err(error) = result {
+                    self.error_banner = Some(error.to_string());
+                }
+                Task::none()
+            }
+            Message::ModCategoryChanged { mod_id, category } => {
+                let Some(path) = self.selected_instance_path() else {
+                    self.error_banner = Some("select an instance first".into());
+                    return Task::none();
+                };
+                self.mods_loading = true;
+                Task::perform(
+                    crate::instances::mods::set_mod_category(path, mod_id, category),
+                    Message::ModToggled,
+                )
             }
             Message::AuthProviderSelected(provider) => {
                 self.login_provider = provider;
@@ -1197,14 +1309,19 @@ impl SwiftLauncher {
             Message::CopyVerificationUrl => {
                 if let Some((_, url)) = &self.device_flow {
                     let url = url.clone();
-                    self.launch_log.push("verification URL copied".into());
+                    self.push_launch_log("verification URL copied".into());
                     Task::batch([iced::clipboard::write(url)])
                 } else {
                     Task::none()
                 }
             }
             Message::CopyLogs => {
-                let text = self.launch_log.join("\n");
+                let text = self
+                    .selected_instance
+                    .as_ref()
+                    .and_then(|id| self.launch_logs_by_instance.get(id))
+                    .unwrap_or(&self.launch_log)
+                    .join("\n");
                 Task::batch([iced::clipboard::write(text)])
             }
             Message::AccountMenuToggled => {
@@ -1401,18 +1518,23 @@ impl SwiftLauncher {
                 self.persist_settings();
                 Task::none()
             }
+            Message::CurseForgeApiKeyChanged(value) => {
+                self.settings.curseforge_api_key = value;
+                self.persist_settings();
+                Task::none()
+            }
             Message::OpenExternal(url) => {
                 Task::perform(crate::system::open_url(url), Message::PathOpened)
             }
             Message::DownloadProgress(progress) => {
-                self.launch_log.push(format!(
+                self.push_launch_log(format!(
                     "download {} {}",
                     progress.job_id, progress.downloaded_bytes
                 ));
                 Task::none()
             }
             Message::DownloadEvent(event) => {
-                self.launch_log.push(format!("download event: {event:?}"));
+                self.push_launch_log(format!("download event: {event:?}"));
                 Task::none()
             }
             Message::ErrorDismissed => {
@@ -1486,12 +1608,17 @@ impl SwiftLauncher {
                     .launch_status_by_instance
                     .get(id)
                     .map(String::as_str)
-                    .or_else(|| match instance.run_state {
+                    .or(match instance.run_state {
                         crate::instances::InstanceRunState::Preparing => Some("Launching..."),
                         crate::instances::InstanceRunState::Running => Some("Running"),
                         crate::instances::InstanceRunState::Idle => None,
                     });
                 let launch_progress = self.launch_progress_by_instance.get(id).copied();
+                let launch_log = self
+                    .launch_logs_by_instance
+                    .get(id)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
                 let detail = crate::screens::instance_detail::view(
                     instance,
                     self.selected_tab,
@@ -1500,6 +1627,7 @@ impl SwiftLauncher {
                     &self.export_path,
                     self.export_busy,
                     &self.modrinth_query,
+                    self.resource_provider,
                     self.modrinth_kind,
                     &self.modrinth_results,
                     self.modrinth_detail.as_ref(),
@@ -1507,10 +1635,12 @@ impl SwiftLauncher {
                     self.modrinth_detail_busy,
                     self.modrinth_busy,
                     &self.installed_mods,
+                    &self.mod_categories,
+                    &self.new_mod_category,
                     self.mods_loading,
                     &self.modrinth_install_status,
                     self.modrinth_install_progress,
-                    &self.launch_log,
+                    launch_log,
                     launch_status,
                     launch_progress,
                 );
@@ -1612,6 +1742,19 @@ impl SwiftLauncher {
         }
     }
 
+    fn push_instance_launch_log(&mut self, instance_id: &str, line: String) {
+        const MAX_LOG_LINES: usize = 700;
+        let log = self
+            .launch_logs_by_instance
+            .entry(instance_id.to_string())
+            .or_default();
+        log.push(line);
+        if log.len() > MAX_LOG_LINES {
+            let overflow = log.len() - MAX_LOG_LINES;
+            log.drain(0..overflow);
+        }
+    }
+
     fn with_selected_instance(&mut self, f: impl FnOnce(&mut Instance)) {
         if let Some(id) = &self.selected_instance {
             if let Some(instance) = self
@@ -1696,6 +1839,9 @@ impl SwiftLauncher {
 
     fn remove_instance_metadata(&mut self, id: &str) {
         self.instances.retain(|instance| instance.id != id);
+        self.launch_logs_by_instance.remove(id);
+        self.launch_status_by_instance.remove(id);
+        self.launch_progress_by_instance.remove(id);
         if self.selected_instance.as_deref() == Some(id) {
             self.selected_instance = None;
         }
@@ -1796,7 +1942,9 @@ fn modrinth_install_subscription(install: ActiveModrinthInstall) -> Subscription
 
             let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
             let task = tokio::spawn(
-                crate::instances::mods::install_modrinth_project_with_status(
+                crate::instances::mods::install_resource_project_with_status(
+                    install.provider,
+                    install.curseforge_api_key,
                     install.kind,
                     install.instance_path,
                     install.minecraft_version,

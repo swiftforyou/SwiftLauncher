@@ -4,7 +4,9 @@ use std::time::Instant;
 use crate::auth::{AuthProvider, Session};
 use crate::download::{DownloadEvent, DownloadProgress};
 use crate::error::AppError;
-use crate::instances::mods::{InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail};
+use crate::instances::mods::{
+    InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail, ResourceProvider,
+};
 use crate::instances::{Instance, InstanceTab, LoaderKind, SortMode};
 use crate::state::StartupData;
 
@@ -120,6 +122,7 @@ pub enum Message {
     ImportModSubmit,
     ModImported(Result<Vec<InstalledMod>, AppError>),
     ModrinthSearchChanged(String),
+    ResourceProviderSelected(ResourceProvider),
     ModrinthKindSelected(ModrinthKind),
     SearchModrinth,
     ModrinthSearchFinished(Result<Vec<ModrinthProject>, AppError>),
@@ -132,6 +135,13 @@ pub enum Message {
         progress: f32,
     },
     ModrinthProjectInstalled(Result<Vec<InstalledMod>, AppError>),
+    ModCategoryNameChanged(String),
+    AddModCategory,
+    ModCategoryAdded(Result<(), AppError>),
+    ModCategoryChanged {
+        mod_id: String,
+        category: String,
+    },
     AuthProviderSelected(AuthProvider),
     UsernameChanged(String),
     PasswordChanged(String),
@@ -168,6 +178,7 @@ pub enum Message {
     DefaultGameDirChanged(String),
     DiscordPresenceChanged(bool),
     CrashReporterChanged(bool),
+    CurseForgeApiKeyChanged(String),
     OpenExternal(String),
     DownloadProgress(DownloadProgress),
     DownloadEvent(DownloadEvent),

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -12,6 +12,25 @@ use crate::error::AppError;
 use crate::instances::install::InstallProgress;
 use crate::instances::LoaderKind;
 use tokio::sync::mpsc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResourceProvider {
+    Modrinth,
+    CurseForge,
+}
+
+impl ResourceProvider {
+    pub const ALL: [Self; 2] = [Self::Modrinth, Self::CurseForge];
+}
+
+impl std::fmt::Display for ResourceProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Modrinth => f.write_str("Modrinth"),
+            Self::CurseForge => f.write_str("CurseForge"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModrinthKind {
@@ -56,6 +75,8 @@ pub struct InstalledMod {
     pub name: String,
     pub version: String,
     pub enabled: bool,
+    pub category: String,
+    pub icon: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +88,7 @@ pub struct ModrinthProject {
     pub downloads: u64,
     pub icon: Option<Vec<u8>>,
     pub kind: ModrinthKind,
+    pub provider: ResourceProvider,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,33 +101,45 @@ pub struct ModrinthProjectDetail {
     pub icon: Option<Vec<u8>>,
     pub gallery: Vec<Vec<u8>>,
     pub kind: ModrinthKind,
+    pub provider: ResourceProvider,
 }
 
 pub async fn list_mods(instance_path: &Path) -> Result<Vec<InstalledMod>, AppError> {
+    let metadata = load_metadata(instance_path).await.unwrap_or_default();
     let mut mods = Vec::new();
-    let mods_dir = instance_path.join("mods");
-    if tokio::fs::metadata(&mods_dir).await.is_err() {
-        return Ok(mods);
-    }
-    let mut entries = tokio::fs::read_dir(mods_dir).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if name.ends_with(".jar") || name.ends_with(".jar.disabled") {
-            mods.push(InstalledMod {
-                id: name.to_string(),
-                name: name
-                    .trim_end_matches(".disabled")
-                    .trim_end_matches(".jar")
-                    .to_string(),
-                version: "local".into(),
-                enabled: name.ends_with(".jar"),
-            });
-        }
-    }
-    mods.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    scan_installed_dir(instance_path, "mods", "Installed", &["jar"], &metadata, &mut mods).await?;
+    scan_installed_dir(
+        instance_path,
+        "resourcepacks",
+        "Resource Packs",
+        &["zip"],
+        &metadata,
+        &mut mods,
+    )
+    .await?;
+    scan_installed_dir(
+        instance_path,
+        "shaderpacks",
+        "Shaders",
+        &["zip"],
+        &metadata,
+        &mut mods,
+    )
+    .await?;
+    scan_installed_dir(
+        instance_path,
+        "modpacks",
+        "Modpacks",
+        &["mrpack", "zip"],
+        &metadata,
+        &mut mods,
+    )
+    .await?;
+    mods.sort_by(|a, b| {
+        a.category
+            .cmp(&b.category)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
     Ok(mods)
 }
 
@@ -114,20 +148,22 @@ pub async fn set_mod_enabled(
     mod_id: String,
     enabled: bool,
 ) -> Result<Vec<InstalledMod>, AppError> {
-    let mods_dir = instance_path.join("mods");
-    let source = mod_path(&mods_dir, &mod_id)?;
+    let source = resource_path(&instance_path, &mod_id)?;
     let file_name = source
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| AppError::Instance("invalid mod file name".into()))?;
     let target = if enabled {
         if file_name.ends_with(".jar.disabled") {
-            mods_dir.join(file_name.trim_end_matches(".disabled"))
+            source.with_file_name(file_name.trim_end_matches(".disabled"))
         } else {
             source.clone()
         }
-    } else if file_name.ends_with(".jar") {
-        mods_dir.join(format!("{file_name}.disabled"))
+    } else if file_name.ends_with(".jar")
+        || file_name.ends_with(".zip")
+        || file_name.ends_with(".mrpack")
+    {
+        source.with_file_name(format!("{file_name}.disabled"))
     } else {
         source.clone()
     };
@@ -148,8 +184,7 @@ pub async fn delete_mod(
     instance_path: PathBuf,
     mod_id: String,
 ) -> Result<Vec<InstalledMod>, AppError> {
-    let mods_dir = instance_path.join("mods");
-    let path = mod_path(&mods_dir, &mod_id)?;
+    let path = resource_path(&instance_path, &mod_id)?;
     tokio::fs::remove_file(path).await?;
     list_mods(&instance_path).await
 }
@@ -161,6 +196,7 @@ pub async fn import_mod(
     let file_name = source
         .file_name()
         .and_then(|name| name.to_str())
+        .map(str::to_string)
         .ok_or_else(|| AppError::Instance("invalid source mod file name".into()))?;
     if !file_name.ends_with(".jar") {
         return Err(AppError::Instance(
@@ -169,14 +205,195 @@ pub async fn import_mod(
     }
     let mods_dir = instance_path.join("mods");
     tokio::fs::create_dir_all(&mods_dir).await?;
-    let target = mods_dir.join(file_name);
+    let target = mods_dir.join(&file_name);
     if tokio::fs::metadata(&target).await.is_ok() {
         return Err(AppError::Instance(format!(
             "mod already exists: {file_name}"
         )));
     }
     tokio::fs::copy(source, target).await?;
+    upsert_metadata(
+        &instance_path,
+        vec![ResourceInstallRecord {
+            id: format!("mods/{file_name}"),
+            title: Some(file_name.trim_end_matches(".jar").to_string()),
+            category: "Installed".into(),
+            icon: None,
+        }],
+    )
+    .await?;
     list_mods(&instance_path).await
+}
+
+pub async fn set_mod_category(
+    instance_path: PathBuf,
+    mod_id: String,
+    category: String,
+) -> Result<Vec<InstalledMod>, AppError> {
+    let category = clean_category(&category)?;
+    upsert_metadata(
+        &instance_path,
+        vec![ResourceInstallRecord {
+            id: metadata_key(&mod_id),
+            title: None,
+            category,
+            icon: None,
+        }],
+    )
+    .await?;
+    list_mods(&instance_path).await
+}
+
+pub async fn add_mod_category(instance_path: PathBuf, category: String) -> Result<(), AppError> {
+    let category = clean_category(&category)?;
+    let mut metadata = load_metadata(&instance_path).await.unwrap_or_default();
+    if !metadata.categories.iter().any(|item| item == &category) {
+        metadata.categories.push(category);
+        metadata.categories.sort();
+    }
+    save_metadata(&instance_path, &metadata).await
+}
+
+pub fn default_mod_categories() -> Vec<String> {
+    ["Installed", "Dependencies", "Modpacks", "Resource Packs", "Shaders"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn categories_from_installed(installed: &[InstalledMod]) -> Vec<String> {
+    let mut out = default_mod_categories();
+    for item in installed {
+        if !out.iter().any(|category| category == &item.category) {
+            out.push(item.category.clone());
+        }
+    }
+    out.sort();
+    out
+}
+
+async fn scan_installed_dir(
+    instance_path: &Path,
+    dir_name: &str,
+    default_category: &str,
+    extensions: &[&str],
+    metadata: &ModsMetadata,
+    out: &mut Vec<InstalledMod>,
+) -> Result<(), AppError> {
+    let dir = instance_path.join(dir_name);
+    if tokio::fs::metadata(&dir).await.is_err() {
+        return Ok(());
+    }
+    let mut entries = tokio::fs::read_dir(dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let enabled = !name.ends_with(".disabled");
+        let active_name = name.trim_end_matches(".disabled");
+        let Some(extension) = active_name.rsplit('.').next() else {
+            continue;
+        };
+        if !extensions.contains(&extension) {
+            continue;
+        }
+        let id = format!("{dir_name}/{name}");
+        let key = metadata_key(&id);
+        let meta = metadata.items.get(&key);
+        let display_name = meta
+            .and_then(|item| item.title.clone())
+            .unwrap_or_else(|| {
+                active_name
+                    .trim_end_matches(".jar")
+                    .trim_end_matches(".zip")
+                    .trim_end_matches(".mrpack")
+                    .to_string()
+            });
+        out.push(InstalledMod {
+            id,
+            name: display_name,
+            version: "local".into(),
+            enabled,
+            category: meta
+                .map(|item| item.category.clone())
+                .filter(|category| !category.trim().is_empty())
+                .unwrap_or_else(|| default_category.to_string()),
+            icon: meta.and_then(|item| item.icon.clone()),
+        });
+    }
+    Ok(())
+}
+
+fn metadata_key(id: &str) -> String {
+    id.trim_start_matches("mods/")
+        .trim_end_matches(".disabled")
+        .to_string()
+        .split_once('/')
+        .map(|_| id.trim_end_matches(".disabled").to_string())
+        .unwrap_or_else(|| format!("mods/{}", id.trim_end_matches(".disabled")))
+}
+
+fn clean_category(category: &str) -> Result<String, AppError> {
+    let category = category.trim();
+    if category.is_empty() {
+        return Err(AppError::Instance("category name cannot be empty".into()));
+    }
+    if category.len() > 40 {
+        return Err(AppError::Instance("category name too long".into()));
+    }
+    Ok(category.to_string())
+}
+
+async fn upsert_metadata(
+    instance_path: &Path,
+    records: Vec<ResourceInstallRecord>,
+) -> Result<(), AppError> {
+    let mut metadata = load_metadata(instance_path).await.unwrap_or_default();
+    for category in default_mod_categories() {
+        if !metadata.categories.iter().any(|item| item == &category) {
+            metadata.categories.push(category);
+        }
+    }
+    for record in records {
+        if !metadata.categories.iter().any(|item| item == &record.category) {
+            metadata.categories.push(record.category.clone());
+        }
+        let key = metadata_key(&record.id);
+        let entry = metadata.items.entry(key).or_default();
+        if let Some(title) = record.title {
+            entry.title = Some(title);
+        }
+        entry.category = record.category;
+        if record.icon.is_some() {
+            entry.icon = record.icon;
+        }
+    }
+    metadata.categories.sort();
+    save_metadata(instance_path, &metadata).await
+}
+
+async fn load_metadata(instance_path: &Path) -> Result<ModsMetadata, AppError> {
+    let path = metadata_path(instance_path);
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(ModsMetadata::default()),
+        Err(error) => return Err(AppError::Storage(error.to_string())),
+    };
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+async fn save_metadata(instance_path: &Path, metadata: &ModsMetadata) -> Result<(), AppError> {
+    let path = metadata_path(instance_path);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(path, serde_json::to_vec_pretty(metadata)?).await?;
+    Ok(())
+}
+
+fn metadata_path(instance_path: &Path) -> PathBuf {
+    instance_path.join(".swift").join("mods.json")
 }
 
 pub async fn search_modrinth(
@@ -230,9 +447,26 @@ pub async fn search_modrinth(
             downloads: hit.downloads,
             icon,
             kind,
+            provider: ResourceProvider::Modrinth,
         });
     }
     Ok(projects)
+}
+
+pub async fn search_resources(
+    provider: ResourceProvider,
+    curseforge_api_key: String,
+    query: String,
+    minecraft_version: String,
+    loader: LoaderKind,
+    kind: ModrinthKind,
+) -> Result<Vec<ModrinthProject>, AppError> {
+    match provider {
+        ResourceProvider::Modrinth => search_modrinth(query, minecraft_version, loader, kind).await,
+        ResourceProvider::CurseForge => {
+            search_curseforge(curseforge_api_key, query, minecraft_version, loader, kind).await
+        }
+    }
 }
 
 pub async fn modrinth_project_detail(
@@ -267,7 +501,22 @@ pub async fn modrinth_project_detail(
         icon,
         gallery,
         kind,
+        provider: ResourceProvider::Modrinth,
     })
+}
+
+pub async fn resource_project_detail(
+    provider: ResourceProvider,
+    curseforge_api_key: String,
+    project_id: String,
+    kind: ModrinthKind,
+) -> Result<ModrinthProjectDetail, AppError> {
+    match provider {
+        ResourceProvider::Modrinth => modrinth_project_detail(project_id, kind).await,
+        ResourceProvider::CurseForge => {
+            curseforge_project_detail(curseforge_api_key, project_id, kind).await
+        }
+    }
 }
 
 pub async fn install_modrinth_project(
@@ -286,6 +535,44 @@ pub async fn install_modrinth_project(
         None,
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn install_resource_project_with_status(
+    provider: ResourceProvider,
+    curseforge_api_key: String,
+    kind: ModrinthKind,
+    instance_path: PathBuf,
+    minecraft_version: String,
+    loader: LoaderKind,
+    project_id: String,
+    status_tx: Option<mpsc::UnboundedSender<InstallProgress>>,
+) -> Result<Vec<InstalledMod>, AppError> {
+    match provider {
+        ResourceProvider::Modrinth => {
+            install_modrinth_project_with_status(
+                kind,
+                instance_path,
+                minecraft_version,
+                loader,
+                project_id,
+                status_tx,
+            )
+            .await
+        }
+        ResourceProvider::CurseForge => {
+            install_curseforge_project_with_status(
+                curseforge_api_key,
+                kind,
+                instance_path,
+                minecraft_version,
+                loader,
+                project_id,
+                status_tx,
+            )
+            .await
+        }
+    }
 }
 
 pub async fn install_modrinth_project_with_status(
@@ -319,6 +606,7 @@ pub async fn install_modrinth_project_with_status(
     };
     let mut visited = BTreeSet::new();
     let mut jobs = Vec::new();
+    let mut records = Vec::new();
     collect_modrinth_jobs(
         kind,
         &project_id,
@@ -327,9 +615,11 @@ pub async fn install_modrinth_project_with_status(
         &instance_path,
         &mut visited,
         &mut jobs,
+        &mut records,
     )
     .await?;
     download_modrinth_jobs_with_status(kind, jobs, status_tx, 0.10, 0.95).await?;
+    upsert_metadata(&instance_path, records).await?;
     list_mods(&instance_path).await
 }
 
@@ -356,12 +646,13 @@ async fn install_modrinth_modpack(
 
     let pack_dir = instance_path.join("modpacks");
     tokio::fs::create_dir_all(&pack_dir).await?;
-    let pack_path = pack_dir.join(&file.filename);
+    let file_name = file.filename.clone();
+    let pack_path = pack_dir.join(&file_name);
     send_install_status(&status_tx, "Downloading .mrpack", 0.08);
     download_modrinth_jobs_with_status(
         ModrinthKind::Modpacks,
         vec![DownloadJob {
-            id: format!("modrinth-modpack:{project_id}:{}", file.filename),
+            id: format!("modrinth-modpack:{project_id}:{file_name}"),
             url: file.url,
             destination_path: pack_path.clone(),
             expected_sha1: file.hashes.sha1,
@@ -396,7 +687,231 @@ async fn install_modrinth_modpack(
     download_modrinth_jobs_with_status(ModrinthKind::Modpacks, jobs, status_tx.clone(), 0.22, 0.92)
         .await?;
     send_install_status(&status_tx, "Applying modpack overrides", 0.95);
-    extract_mrpack_overrides(pack_path, instance_path).await
+    extract_mrpack_overrides(pack_path, instance_path.clone()).await?;
+    upsert_metadata(
+        &instance_path,
+        vec![ResourceInstallRecord {
+            id: format!("modpacks/{file_name}"),
+            title: Some(project_id),
+            category: "Modpacks".into(),
+            icon: None,
+        }],
+    )
+    .await
+}
+
+async fn search_curseforge(
+    api_key: String,
+    query: String,
+    minecraft_version: String,
+    loader: LoaderKind,
+    kind: ModrinthKind,
+) -> Result<Vec<ModrinthProject>, AppError> {
+    let api_key = require_curseforge_key(&api_key)?;
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut url = format!(
+        "{}/mods/search?gameId=432&classId={}&searchFilter={}&gameVersion={}&sortField=6&sortOrder=desc&pageSize=20",
+        curseforge_base_url(),
+        curseforge_class_id(kind),
+        url_encode(query),
+        url_encode(&minecraft_version),
+    );
+    if matches!(kind, ModrinthKind::Mods | ModrinthKind::Modpacks) {
+        if let Some(loader_type) = curseforge_loader_type(loader) {
+            url.push_str(&format!("&modLoaderType={loader_type}"));
+        }
+    }
+    let client = curseforge_client();
+    let response = client
+        .get(url)
+        .header("x-api-key", api_key)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<CurseForgeEnvelope<Vec<CurseForgeMod>>>()
+        .await?;
+    let mut projects = Vec::new();
+    for item in response.data {
+        let icon_url = item.logo.and_then(|logo| logo.thumbnail_url.or(logo.url));
+        let icon = match icon_url {
+            Some(url) => fetch_image_bytes(&client, &url).await.ok(),
+            None => None,
+        };
+        projects.push(ModrinthProject {
+            project_id: item.id.to_string(),
+            slug: item.slug.unwrap_or_else(|| item.id.to_string()),
+            title: item.name,
+            description: item.summary.unwrap_or_default(),
+            downloads: item.download_count.unwrap_or_default() as u64,
+            icon,
+            kind,
+            provider: ResourceProvider::CurseForge,
+        });
+    }
+    Ok(projects)
+}
+
+async fn curseforge_project_detail(
+    api_key: String,
+    project_id: String,
+    kind: ModrinthKind,
+) -> Result<ModrinthProjectDetail, AppError> {
+    let api_key = require_curseforge_key(&api_key)?;
+    let client = curseforge_client();
+    let base = curseforge_base_url();
+    let project = client
+        .get(format!("{base}/mods/{project_id}"))
+        .header("x-api-key", api_key)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<CurseForgeEnvelope<CurseForgeMod>>()
+        .await?
+        .data;
+    let body = client
+        .get(format!("{base}/mods/{project_id}/description"))
+        .header("x-api-key", api_key)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<CurseForgeEnvelope<String>>()
+        .await?
+        .data;
+    let icon_url = project
+        .logo
+        .as_ref()
+        .and_then(|logo| logo.thumbnail_url.as_ref().or(logo.url.as_ref()));
+    let icon = match icon_url {
+        Some(url) => fetch_image_bytes(&client, url).await.ok(),
+        None => None,
+    };
+    let mut gallery = Vec::new();
+    for screenshot in project.screenshots.iter().take(4) {
+        let url = screenshot.thumbnail_url.as_ref().or(screenshot.url.as_ref());
+        if let Some(url) = url {
+            if let Ok(bytes) = fetch_image_bytes(&client, url).await {
+                gallery.push(bytes);
+            }
+        }
+    }
+    Ok(ModrinthProjectDetail {
+        project_id,
+        title: project.name,
+        description: project.summary.unwrap_or_default(),
+        body,
+        downloads: project.download_count.unwrap_or_default() as u64,
+        icon,
+        gallery,
+        kind,
+        provider: ResourceProvider::CurseForge,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn install_curseforge_project_with_status(
+    api_key: String,
+    kind: ModrinthKind,
+    instance_path: PathBuf,
+    minecraft_version: String,
+    loader: LoaderKind,
+    project_id: String,
+    status_tx: Option<mpsc::UnboundedSender<InstallProgress>>,
+) -> Result<Vec<InstalledMod>, AppError> {
+    let api_key = require_curseforge_key(&api_key)?;
+    send_install_status(&status_tx, format!("Resolving CurseForge {kind}"), 0.04);
+    let mut visited = BTreeSet::new();
+    let mut jobs = Vec::new();
+    let mut records = Vec::new();
+    collect_curseforge_jobs(
+        api_key,
+        kind,
+        &project_id,
+        &minecraft_version,
+        loader,
+        &instance_path,
+        &mut visited,
+        &mut jobs,
+        &mut records,
+    )
+    .await?;
+    download_modrinth_jobs_with_status(kind, jobs, status_tx, 0.10, 0.95).await?;
+    upsert_metadata(&instance_path, records).await?;
+    list_mods(&instance_path).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn collect_curseforge_jobs(
+    api_key: &str,
+    kind: ModrinthKind,
+    project_id: &str,
+    minecraft_version: &str,
+    loader: LoaderKind,
+    instance_path: &Path,
+    visited: &mut BTreeSet<String>,
+    jobs: &mut Vec<DownloadJob>,
+    records: &mut Vec<ResourceInstallRecord>,
+) -> Result<(), AppError> {
+    let client = curseforge_client();
+    let mut stack = vec![(project_id.to_string(), false)];
+    while let Some((project_id, is_dependency)) = stack.pop() {
+        if !visited.insert(project_id.clone()) {
+            continue;
+        }
+        let project = curseforge_mod(&client, api_key, &project_id).await.ok();
+        let file = compatible_curseforge_file(&client, api_key, &project_id, minecraft_version, loader).await?;
+        for dependency in &file.dependencies {
+            if dependency.relation_type == 3 {
+                let dep_id = dependency.mod_id.to_string();
+                if !visited.contains(&dep_id) {
+                    stack.push((dep_id, true));
+                }
+            }
+        }
+        let download_url = match file.download_url.filter(|url| !url.trim().is_empty()) {
+            Some(url) => url,
+            None => curseforge_download_url(&client, api_key, &project_id, file.id).await?,
+        };
+        let relative_path = format!("{}/{}", modrinth_install_dir(kind), file.file_name);
+        let sha1 = file
+            .hashes
+            .iter()
+            .find(|hash| hash.algo == 1)
+            .map(|hash| hash.value.clone());
+        jobs.push(DownloadJob {
+            id: format!("curseforge:{project_id}:{}", file.file_name),
+            url: download_url,
+            destination_path: safe_instance_child(instance_path, &relative_path)?,
+            expected_sha1: sha1,
+            size_bytes: file.file_length,
+        });
+        let icon = match project
+            .as_ref()
+            .and_then(|item| item.logo.as_ref())
+            .and_then(|logo| logo.thumbnail_url.as_ref().or(logo.url.as_ref()))
+        {
+            Some(url) => fetch_image_bytes(&client, url).await.ok(),
+            None => None,
+        };
+        records.push(ResourceInstallRecord {
+            id: relative_path,
+            title: project.map(|item| item.name),
+            category: if is_dependency {
+                "Dependencies".into()
+            } else {
+                match kind {
+                    ModrinthKind::Mods => "Installed".into(),
+                    ModrinthKind::Modpacks => "Modpacks".into(),
+                    ModrinthKind::ResourcePacks => "Resource Packs".into(),
+                    ModrinthKind::Shaders => "Shaders".into(),
+                }
+            },
+            icon,
+        });
+    }
+    Ok(())
 }
 
 async fn download_modrinth_jobs_with_status(
@@ -528,6 +1043,7 @@ async fn extract_mrpack_overrides(
     .map_err(|error| AppError::Download(error.to_string()))?
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn collect_modrinth_jobs(
     kind: ModrinthKind,
     project_id: &str,
@@ -536,9 +1052,10 @@ async fn collect_modrinth_jobs(
     instance_path: &Path,
     visited: &mut BTreeSet<String>,
     jobs: &mut Vec<DownloadJob>,
+    records: &mut Vec<ResourceInstallRecord>,
 ) -> Result<(), AppError> {
-    let mut stack = vec![project_id.to_string()];
-    while let Some(project_id) = stack.pop() {
+    let mut stack = vec![(project_id.to_string(), false)];
+    while let Some((project_id, is_dependency)) = stack.pop() {
         if !visited.insert(project_id.clone()) {
             continue;
         }
@@ -547,24 +1064,39 @@ async fn collect_modrinth_jobs(
             if dependency.dependency_type == "required" {
                 if let Some(project_id) = &dependency.project_id {
                     if !visited.contains(project_id) {
-                        stack.push(project_id.clone());
+                        stack.push((project_id.clone(), true));
                     }
                 }
             }
         }
+        let metadata = modrinth_project_metadata(&project_id).await.ok();
         let file = primary_file(version.files).ok_or_else(|| {
             AppError::Download(format!(
                 "Modrinth project {project_id} has no downloadable files"
             ))
         })?;
+        let relative_path = format!("{}/{}", modrinth_install_dir(kind), file.filename);
         jobs.push(DownloadJob {
             id: format!("modrinth:{project_id}:{}", file.filename),
             url: file.url,
-            destination_path: instance_path
-                .join(modrinth_install_dir(kind))
-                .join(&file.filename),
+            destination_path: safe_instance_child(instance_path, &relative_path)?,
             expected_sha1: file.hashes.sha1,
             size_bytes: file.size,
+        });
+        records.push(ResourceInstallRecord {
+            id: relative_path,
+            title: metadata.as_ref().map(|item| item.title.clone()),
+            category: if is_dependency {
+                "Dependencies".into()
+            } else {
+                match kind {
+                    ModrinthKind::Mods => "Installed".into(),
+                    ModrinthKind::Modpacks => "Modpacks".into(),
+                    ModrinthKind::ResourcePacks => "Resource Packs".into(),
+                    ModrinthKind::Shaders => "Shaders".into(),
+                }
+            },
+            icon: metadata.and_then(|item| item.icon),
         });
     }
     Ok(())
@@ -606,6 +1138,95 @@ async fn compatible_modrinth_version(
         })
 }
 
+async fn compatible_curseforge_file(
+    client: &reqwest::Client,
+    api_key: &str,
+    project_id: &str,
+    minecraft_version: &str,
+    loader: LoaderKind,
+) -> Result<CurseForgeFile, AppError> {
+    let mut url = format!(
+        "{}/mods/{project_id}/files?gameVersion={}&pageSize=50",
+        curseforge_base_url(),
+        url_encode(minecraft_version),
+    );
+    if let Some(loader_type) = curseforge_loader_type(loader) {
+        url.push_str(&format!("&modLoaderType={loader_type}"));
+    }
+    client
+        .get(url)
+        .header("x-api-key", api_key)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<CurseForgeEnvelope<Vec<CurseForgeFile>>>()
+        .await?
+        .data
+        .into_iter()
+        .find(|file| file.file_status == Some(4) || file.file_status.is_none())
+        .ok_or_else(|| {
+            AppError::Download(format!(
+                "no compatible CurseForge file found for {project_id}"
+            ))
+        })
+}
+
+async fn curseforge_mod(
+    client: &reqwest::Client,
+    api_key: &str,
+    project_id: &str,
+) -> Result<CurseForgeMod, AppError> {
+    Ok(client
+        .get(format!("{}/mods/{project_id}", curseforge_base_url()))
+        .header("x-api-key", api_key)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<CurseForgeEnvelope<CurseForgeMod>>()
+        .await?
+        .data)
+}
+
+async fn curseforge_download_url(
+    client: &reqwest::Client,
+    api_key: &str,
+    project_id: &str,
+    file_id: u64,
+) -> Result<String, AppError> {
+    Ok(client
+        .get(format!(
+            "{}/mods/{project_id}/files/{file_id}/download-url",
+            curseforge_base_url()
+        ))
+        .header("x-api-key", api_key)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<CurseForgeEnvelope<String>>()
+        .await?
+        .data)
+}
+
+async fn modrinth_project_metadata(project_id: &str) -> Result<ProjectMetadata, AppError> {
+    let client = modrinth_client();
+    let base = modrinth_base_url();
+    let project = client
+        .get(format!("{base}/v2/project/{}", url_encode(project_id)))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<ModrinthProjectResponse>()
+        .await?;
+    let icon = match &project.icon_url {
+        Some(url) => fetch_image_bytes(&client, url).await.ok(),
+        None => None,
+    };
+    Ok(ProjectMetadata {
+        title: project.title,
+        icon,
+    })
+}
+
 fn modrinth_install_dir(kind: ModrinthKind) -> &'static str {
     match kind {
         ModrinthKind::Mods => "mods",
@@ -620,16 +1241,117 @@ fn primary_file(files: Vec<ModrinthFile>) -> Option<ModrinthFile> {
     files.into_iter().find(|file| file.primary).or(first)
 }
 
-fn mod_path(mods_dir: &Path, mod_id: &str) -> Result<PathBuf, AppError> {
-    if mod_id.contains('/') || mod_id.contains('\\') || mod_id == "." || mod_id == ".." {
-        return Err(AppError::Instance("invalid mod id".into()));
+fn resource_path(instance_path: &Path, resource_id: &str) -> Result<PathBuf, AppError> {
+    let resource_id = if resource_id.contains('/') || resource_id.contains('\\') {
+        resource_id.to_string()
+    } else {
+        format!("mods/{resource_id}")
+    };
+    let path = safe_instance_child(instance_path, &resource_id)?;
+    let allowed_dir = resource_id.starts_with("mods/")
+        || resource_id.starts_with("resourcepacks/")
+        || resource_id.starts_with("shaderpacks/")
+        || resource_id.starts_with("modpacks/");
+    let allowed_ext = resource_id.ends_with(".jar")
+        || resource_id.ends_with(".jar.disabled")
+        || resource_id.ends_with(".zip")
+        || resource_id.ends_with(".zip.disabled")
+        || resource_id.ends_with(".mrpack")
+        || resource_id.ends_with(".mrpack.disabled");
+    if !allowed_dir || !allowed_ext {
+        return Err(AppError::Instance("invalid installed resource id".into()));
     }
-    if !(mod_id.ends_with(".jar") || mod_id.ends_with(".jar.disabled")) {
-        return Err(AppError::Instance(
-            "mod file must be .jar or .jar.disabled".into(),
-        ));
-    }
-    Ok(mods_dir.join(mod_id))
+    Ok(path)
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ModsMetadata {
+    #[serde(default)]
+    categories: Vec<String>,
+    #[serde(default)]
+    items: BTreeMap<String, ModMetadata>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ModMetadata {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default = "installed_category")]
+    category: String,
+    #[serde(default)]
+    icon: Option<Vec<u8>>,
+}
+
+fn installed_category() -> String {
+    "Installed".into()
+}
+
+struct ResourceInstallRecord {
+    id: String,
+    title: Option<String>,
+    category: String,
+    icon: Option<Vec<u8>>,
+}
+
+struct ProjectMetadata {
+    title: String,
+    icon: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeEnvelope<T> {
+    data: T,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeMod {
+    id: u64,
+    name: String,
+    slug: Option<String>,
+    summary: Option<String>,
+    #[serde(default, rename = "downloadCount")]
+    download_count: Option<f64>,
+    logo: Option<CurseForgeImage>,
+    #[serde(default)]
+    screenshots: Vec<CurseForgeImage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeImage {
+    url: Option<String>,
+    #[serde(rename = "thumbnailUrl")]
+    thumbnail_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeFile {
+    id: u64,
+    #[serde(rename = "fileName")]
+    file_name: String,
+    #[serde(rename = "downloadUrl")]
+    download_url: Option<String>,
+    #[serde(rename = "fileLength")]
+    file_length: Option<u64>,
+    #[serde(default)]
+    hashes: Vec<CurseForgeHash>,
+    #[serde(default)]
+    dependencies: Vec<CurseForgeDependency>,
+    #[serde(rename = "fileStatus")]
+    file_status: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeHash {
+    value: String,
+    algo: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeDependency {
+    #[serde(rename = "modId")]
+    mod_id: u64,
+    #[serde(rename = "relationType")]
+    relation_type: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -871,6 +1593,50 @@ fn modrinth_base_url() -> String {
         .unwrap_or_else(|| "https://api.modrinth.com".to_string())
 }
 
+fn curseforge_base_url() -> String {
+    std::env::var("SWIFT_LAUNCHER_CURSEFORGE_BASE")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "https://api.curseforge.com/v1".to_string())
+}
+
+fn curseforge_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(format!("SwiftLauncher/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+fn require_curseforge_key(api_key: &str) -> Result<&str, AppError> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        return Err(AppError::Instance(
+            "CurseForge needs API key. Paste it in Settings > Integrations.".into(),
+        ));
+    }
+    Ok(api_key)
+}
+
+fn curseforge_class_id(kind: ModrinthKind) -> u32 {
+    match kind {
+        ModrinthKind::Mods => 6,
+        ModrinthKind::Modpacks => 4471,
+        ModrinthKind::ResourcePacks => 12,
+        ModrinthKind::Shaders => 6552,
+    }
+}
+
+fn curseforge_loader_type(loader: LoaderKind) -> Option<u32> {
+    match loader {
+        LoaderKind::Forge => Some(1),
+        LoaderKind::Fabric => Some(4),
+        LoaderKind::Quilt => Some(5),
+        LoaderKind::NeoForge => Some(6),
+        LoaderKind::Vanilla => None,
+    }
+}
+
 fn url_encode(input: &str) -> String {
     let mut out = String::new();
     for byte in input.bytes() {
@@ -1005,6 +1771,7 @@ mod tests {
         let instance_path = temp_dir("modrinth-deps");
         let mut visited = BTreeSet::new();
         let mut jobs = Vec::new();
+        let mut records = Vec::new();
 
         let result = collect_modrinth_jobs(
             ModrinthKind::Mods,
@@ -1014,6 +1781,7 @@ mod tests {
             &instance_path,
             &mut visited,
             &mut jobs,
+            &mut records,
         )
         .await;
 

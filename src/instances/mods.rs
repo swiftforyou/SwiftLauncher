@@ -84,9 +84,14 @@ pub struct ModrinthProject {
     pub project_id: String,
     pub slug: String,
     pub title: String,
+    pub author: String,
     pub description: String,
     pub downloads: u64,
     pub icon: Option<Vec<u8>>,
+    pub categories: Vec<String>,
+    pub loaders: Vec<String>,
+    pub client_side: Option<String>,
+    pub server_side: Option<String>,
     pub kind: ModrinthKind,
     pub provider: ResourceProvider,
 }
@@ -443,9 +448,18 @@ pub async fn search_modrinth(
             project_id: hit.project_id,
             slug: hit.slug,
             title: hit.title,
+            author: hit.author.unwrap_or_else(|| "unknown".into()),
             description: hit.description,
             downloads: hit.downloads,
             icon,
+            categories: hit.display_categories.unwrap_or(hit.categories),
+            loaders: hit
+                .versions
+                .into_iter()
+                .filter(|value| matches!(value.as_str(), "fabric" | "forge" | "neoforge" | "quilt"))
+                .collect(),
+            client_side: hit.client_side,
+            server_side: hit.server_side,
             kind,
             provider: ResourceProvider::Modrinth,
         });
@@ -744,9 +758,14 @@ async fn search_curseforge(
             project_id: item.id.to_string(),
             slug: item.slug.unwrap_or_else(|| item.id.to_string()),
             title: item.name,
+            author: item.authors.first().map(|author| author.name.clone()).unwrap_or_else(|| "unknown".into()),
             description: item.summary.unwrap_or_default(),
             downloads: item.download_count.unwrap_or_default() as u64,
             icon,
+            categories: item.categories.into_iter().map(|category| category.name).collect(),
+            loaders: Vec::new(),
+            client_side: None,
+            server_side: None,
             kind,
             provider: ResourceProvider::CurseForge,
         });
@@ -1314,6 +1333,20 @@ struct CurseForgeMod {
     logo: Option<CurseForgeImage>,
     #[serde(default)]
     screenshots: Vec<CurseForgeImage>,
+    #[serde(default)]
+    authors: Vec<CurseForgeAuthor>,
+    #[serde(default)]
+    categories: Vec<CurseForgeCategory>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeAuthor {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseForgeCategory {
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1364,9 +1397,20 @@ struct ModrinthHit {
     project_id: String,
     slug: String,
     title: String,
+    author: Option<String>,
     description: String,
     downloads: u64,
     icon_url: Option<String>,
+    #[serde(default)]
+    categories: Vec<String>,
+    #[serde(default)]
+    display_categories: Option<Vec<String>>,
+    #[serde(default)]
+    versions: Vec<String>,
+    #[serde(default)]
+    client_side: Option<String>,
+    #[serde(default)]
+    server_side: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

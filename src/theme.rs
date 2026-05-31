@@ -53,7 +53,7 @@ impl Default for SwiftTheme {
     fn default() -> Self {
         Self {
             mode: ThemeMode::Dark,
-            accent: Accent::Pink,
+            accent: Accent::Green,
         }
     }
 }
@@ -68,42 +68,42 @@ impl SwiftTheme {
 
     pub fn palette(self) -> Palette {
         let accent = match self.accent {
-            Accent::Indigo => color(0xb4, 0xbe, 0xfe),
-            Accent::Green => color(0xa6, 0xe3, 0xa1),
-            Accent::Orange => color(0xfa, 0xb3, 0x87),
-            Accent::Pink => color(0xf5, 0xc2, 0xe7),
-            Accent::Cyan => color(0x94, 0xe2, 0xd5),
-            Accent::Red => color(0xf3, 0x8b, 0xa8),
+            Accent::Indigo => color(0xad, 0xc6, 0xff),
+            Accent::Green => color(0x4e, 0xde, 0xa3),
+            Accent::Orange => color(0xff, 0xc1, 0x7a),
+            Accent::Pink => color(0xff, 0xb2, 0xb7),
+            Accent::Cyan => color(0x72, 0xdc, 0xff),
+            Accent::Red => color(0xff, 0x78, 0x86),
         };
 
         match self.mode {
             ThemeMode::Light => Palette {
-                background: color(0x1e, 0x1e, 0x2e),
-                mantle: color(0x18, 0x18, 0x25),
-                crust: color(0x11, 0x11, 0x1b),
-                surface: color(0x31, 0x32, 0x44),
-                surface_high: color(0x45, 0x47, 0x5a),
-                border: color(0x58, 0x5b, 0x70),
+                background: color(0x13, 0x13, 0x13),
+                mantle: color(0x0e, 0x0e, 0x0e),
+                crust: color(0x0a, 0x0a, 0x0a),
+                surface: color(0x1c, 0x1b, 0x1b),
+                surface_high: color(0x2a, 0x2a, 0x2a),
+                border: color(0x3c, 0x4a, 0x42),
                 accent,
-                success: color(0xa6, 0xe3, 0xa1),
-                danger: color(0xf3, 0x8b, 0xa8),
-                warning: color(0xf9, 0xe2, 0xaf),
-                text: color(0xcd, 0xd6, 0xf4),
-                muted: color(0xa6, 0xad, 0xc8),
+                success: color(0x10, 0xb9, 0x81),
+                danger: color(0xff, 0x78, 0x86),
+                warning: color(0xad, 0xc6, 0xff),
+                text: color(0xe5, 0xe2, 0xe1),
+                muted: color(0xbb, 0xca, 0xbf),
             },
             ThemeMode::Dark | ThemeMode::System => Palette {
-                background: color(0x1e, 0x1e, 0x2e),
-                mantle: color(0x18, 0x18, 0x25),
-                crust: color(0x11, 0x11, 0x1b),
-                surface: color(0x31, 0x32, 0x44),
-                surface_high: color(0x45, 0x47, 0x5a),
-                border: color(0x58, 0x5b, 0x70),
+                background: color(0x13, 0x13, 0x13),
+                mantle: color(0x0e, 0x0e, 0x0e),
+                crust: color(0x0a, 0x0a, 0x0a),
+                surface: color(0x1c, 0x1b, 0x1b),
+                surface_high: color(0x2a, 0x2a, 0x2a),
+                border: color(0x3c, 0x4a, 0x42),
                 accent,
-                success: color(0xa6, 0xe3, 0xa1),
-                danger: color(0xf3, 0x8b, 0xa8),
-                warning: color(0xf9, 0xe2, 0xaf),
-                text: color(0xcd, 0xd6, 0xf4),
-                muted: color(0xa6, 0xad, 0xc8),
+                success: color(0x10, 0xb9, 0x81),
+                danger: color(0xff, 0x78, 0x86),
+                warning: color(0xad, 0xc6, 0xff),
+                text: color(0xe5, 0xe2, 0xe1),
+                muted: color(0xbb, 0xca, 0xbf),
             },
         }
     }
@@ -127,7 +127,7 @@ pub struct Palette {
 
 pub const DARK: SwiftTheme = SwiftTheme {
     mode: ThemeMode::Dark,
-    accent: Accent::Pink,
+    accent: Accent::Green,
 };
 
 pub fn color(r: u8, g: u8, b: u8) -> Color {
@@ -138,7 +138,7 @@ pub fn app_container(_: &Theme) -> container::Style {
     let p = DARK.palette();
     container::Style {
         text_color: Some(p.text),
-        background: Some(Background::Color(p.mantle)),
+        background: Some(Background::Color(p.background)),
         border: Border::default(),
         shadow: Shadow::default(),
     }
@@ -148,8 +148,8 @@ pub fn surface(_: &Theme) -> container::Style {
     let p = DARK.palette();
     container::Style {
         text_color: Some(p.text),
-        background: Some(Background::Color(p.background)),
-        border: border::rounded(8).color(p.border).width(1),
+        background: Some(Background::Color(p.surface)),
+        border: border::rounded(8).color(Color { a: 0.70, ..p.border }).width(1),
         shadow: Shadow::default(),
     }
 }
@@ -158,18 +158,14 @@ pub fn shell(_: &Theme) -> container::Style {
     let p = DARK.palette();
     container::Style {
         text_color: Some(p.text),
-        background: Some(Background::Color(p.mantle)),
-        border: border::rounded(10)
+        background: Some(Background::Color(p.surface)),
+        border: border::rounded(12)
             .color(Color {
-                a: 0.85,
+                a: 0.80,
                 ..p.border
             })
             .width(1),
-        shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
-            offset: iced::Vector::new(0.0, 18.0),
-            blur_radius: 40.0,
-        },
+        shadow: Shadow::default(),
     }
 }
 
@@ -177,7 +173,7 @@ pub fn toolbar(_: &Theme) -> container::Style {
     let p = DARK.palette();
     container::Style {
         text_color: Some(p.text),
-        background: Some(Background::Color(p.background)),
+        background: Some(Background::Color(p.mantle)),
         border: border::rounded(8)
             .color(Color {
                 a: 0.55,
@@ -188,13 +184,23 @@ pub fn toolbar(_: &Theme) -> container::Style {
     }
 }
 
+pub fn sidebar(_: &Theme) -> container::Style {
+    let p = DARK.palette();
+    container::Style {
+        text_color: Some(p.text),
+        background: Some(Background::Color(p.mantle)),
+        border: Border::default(),
+        shadow: Shadow::default(),
+    }
+}
+
 pub fn card(_: &Theme) -> container::Style {
     let p = DARK.palette();
     container::Style {
         text_color: Some(p.text),
         background: Some(Background::Color(p.surface)),
         border: border::rounded(8)
-            .color(Color { a: 0.7, ..p.border })
+            .color(Color { a: 0.72, ..p.border })
             .width(1),
         shadow: Shadow::default(),
     }
@@ -204,7 +210,7 @@ pub fn badge(_: &Theme) -> container::Style {
     let p = DARK.palette();
     container::Style {
         text_color: Some(p.muted),
-        background: Some(Background::Color(p.mantle)),
+        background: Some(Background::Color(p.surface_high)),
         border: border::rounded(99)
             .color(Color {
                 a: 0.55,
@@ -231,7 +237,7 @@ pub fn banner(_: &Theme) -> container::Style {
 pub fn scrim(_: &Theme) -> container::Style {
     container::Style {
         text_color: Some(DARK.palette().text),
-        background: Some(Background::Color(Color::from_rgba(0.07, 0.07, 0.11, 0.78))),
+        background: Some(Background::Color(Color::from_rgba(0.02, 0.02, 0.02, 0.78))),
         border: Border::default(),
         shadow: Shadow::default(),
     }
@@ -289,6 +295,22 @@ pub fn ghost_button(_: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+pub fn nav_button(_: &Theme, status: button::Status) -> button::Style {
+    let p = DARK.palette();
+    let bg = match status {
+        button::Status::Hovered => p.surface_high,
+        button::Status::Pressed => p.surface,
+        button::Status::Disabled | button::Status::Active => p.surface,
+    };
+    button::Style {
+        background: Some(Background::Color(bg)),
+        text_color: p.accent,
+        border: border::rounded(8).color(Color { a: 0.55, ..p.border }).width(1),
+        shadow: Shadow::default(),
+    }
+}
+
+
 fn button_style(base: Color, status: button::Status) -> button::Style {
     let bg = match status {
         button::Status::Hovered => Color { a: 0.92, ..base },
@@ -298,7 +320,7 @@ fn button_style(base: Color, status: button::Status) -> button::Style {
     };
     button::Style {
         background: Some(Background::Color(bg)),
-        text_color: color(0x1e, 0x1e, 0x2e),
+        text_color: color(0x00, 0x38, 0x24),
         border: border::rounded(8).color(Color { a: 0.55, ..base }).width(1),
         shadow: Shadow::default(),
     }
@@ -308,11 +330,11 @@ pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
     let p = DARK.palette();
     let border_color = match status {
         text_input::Status::Focused => p.accent,
-        text_input::Status::Hovered => p.muted,
+        text_input::Status::Hovered => p.border,
         text_input::Status::Active | text_input::Status::Disabled => p.border,
     };
     text_input::Style {
-        background: Background::Color(p.mantle),
+        background: Background::Color(p.surface),
         border: border::rounded(8).color(border_color).width(1),
         icon: p.muted,
         placeholder: p.muted,
@@ -324,7 +346,7 @@ pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
 pub fn progress(_: &Theme) -> progress_bar::Style {
     let p = DARK.palette();
     progress_bar::Style {
-        background: Background::Color(p.mantle),
+        background: Background::Color(p.surface_high),
         bar: Background::Color(p.accent),
         border: border::rounded(6).color(p.border).width(1),
     }

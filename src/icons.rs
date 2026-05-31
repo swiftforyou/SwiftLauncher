@@ -4,6 +4,7 @@ use iced::{Element, Length};
 use crate::messages::Message;
 
 pub const LOGO: &[u8] = include_bytes!("../assets/logo.svg");
+pub const HOME: &[u8] = include_bytes!("../assets/icons/home.svg");
 pub const ADD: &[u8] = include_bytes!("../assets/icons/add.svg");
 pub const ALERT: &[u8] = include_bytes!("../assets/icons/alert.svg");
 pub const ACCOUNT: &[u8] = include_bytes!("../assets/icons/account.svg");

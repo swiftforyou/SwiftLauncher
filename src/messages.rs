@@ -10,14 +10,26 @@ use crate::instances::mods::{
 use crate::instances::{Instance, InstanceTab, LoaderKind, SortMode};
 use crate::state::StartupData;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LauncherPage {
+    Home,
+    Instances,
+    Discover,
+    Accounts,
+    Downloads,
+    Settings,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     StartupFinished(Result<StartupData, AppError>),
     Tick(Instant),
     WindowResized(f32),
+    LauncherPageSelected(LauncherPage),
     SearchChanged(String),
     SortChanged(SortMode),
     ToggleListView(bool),
+    InstanceLoaderFilterChanged(Option<LoaderKind>),
     NewInstance,
     ImportInstance,
     PickImportZip,

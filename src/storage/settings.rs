@@ -28,7 +28,7 @@ impl Default for LauncherSettings {
             .join("instances");
         Self {
             theme_mode: ThemeMode::Dark,
-            accent: Accent::Pink,
+            accent: Accent::Green,
             ui_scale: 100,
             default_java_path: "java".into(),
             default_ram_mb: 4096,

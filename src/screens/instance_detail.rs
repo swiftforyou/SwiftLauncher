@@ -409,7 +409,7 @@ fn loading_row(message: &str) -> Element<'_, Message> {
 fn modrinth_results_view(results: &[ModrinthProject], busy: bool) -> Element<'_, Message> {
     let mut list = column![].spacing(8);
     if busy {
-        list = list.push(loading_row("Searching Modrinth..."));
+        list = list.push(loading_row("Searching..."));
     } else if results.is_empty() {
         list = list.push(text("No results").size(13));
     } else {

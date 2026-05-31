@@ -4,7 +4,6 @@ use iced::widget::{
 use iced::{Alignment, Element, Length};
 
 use crate::auth::Session;
-use crate::icons::{self, icon_button};
 use crate::messages::Message;
 use crate::storage::settings::LauncherSettings;
 use crate::theme;
@@ -22,12 +21,6 @@ pub fn view<'a>(
         ]
         .spacing(4),
         Space::with_width(Length::Fill),
-        icon_button(
-            icons::CLOSE,
-            18.0,
-            Message::SettingsClosed,
-            theme::secondary_button
-        ),
     ]
     .spacing(12)
     .align_y(Alignment::Center);
@@ -46,7 +39,7 @@ pub fn view<'a>(
     container(scrollable(content))
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::scrim)
+        .style(theme::app_container)
         .into()
 }
 

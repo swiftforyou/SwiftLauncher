@@ -17,7 +17,7 @@ use crate::instances::mods::{
 use crate::instances::{
     Instance, InstanceManager, InstanceRunState, InstanceTab, LoaderKind, SortMode,
 };
-use crate::messages::Message;
+use crate::messages::{LauncherPage, Message};
 use crate::state::{AppState, StartupData};
 use crate::storage::{accounts, settings, SledStore};
 use crate::theme::SwiftTheme;
@@ -33,7 +33,9 @@ pub struct SwiftLauncher {
     search: String,
     sort: SortMode,
     list_view: bool,
+    instance_loader_filter: Option<LoaderKind>,
     selected_instance: Option<String>,
+    launcher_page: LauncherPage,
     selected_tab: InstanceTab,
     loading_progress: f32,
     loading_status: String,
@@ -132,7 +134,9 @@ impl SwiftLauncher {
             search: String::new(),
             sort: SortMode::Name,
             list_view: false,
+            instance_loader_filter: None,
             selected_instance: None,
+            launcher_page: LauncherPage::Home,
             selected_tab: InstanceTab::Overview,
             loading_progress: 0.02,
             loading_status: "Opening storage...".into(),
@@ -290,6 +294,11 @@ impl SwiftLauncher {
                 self.window_width = width.max(420.0);
                 Task::none()
             }
+            Message::LauncherPageSelected(page) => {
+                self.launcher_page = page;
+                self.settings_open = false;
+                Task::none()
+            }
             Message::SearchChanged(value) => {
                 self.search = value;
                 Task::none()
@@ -300,6 +309,10 @@ impl SwiftLauncher {
             }
             Message::ToggleListView(value) => {
                 self.list_view = value;
+                Task::none()
+            }
+            Message::InstanceLoaderFilterChanged(loader) => {
+                self.instance_loader_filter = loader;
                 Task::none()
             }
             Message::NewInstance => {
@@ -1084,18 +1097,21 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::SearchModrinth => {
-                let Some(instance) = self.selected_instance().cloned() else {
-                    self.error_banner = Some("select an instance first".into());
-                    return Task::none();
-                };
+                let instance = self
+                    .selected_instance()
+                    .cloned()
+                    .or_else(|| self.instances.first().cloned());
+                let (minecraft_version, loader) = instance
+                    .map(|instance| (instance.minecraft_version, instance.loader))
+                    .unwrap_or_else(|| ("1.21.8".into(), LoaderKind::Fabric));
                 self.modrinth_busy = true;
                 Task::perform(
                     crate::instances::mods::search_resources(
                         self.resource_provider,
                         self.settings.curseforge_api_key.clone(),
                         self.modrinth_query.clone(),
-                        instance.minecraft_version,
-                        instance.loader,
+                        minecraft_version,
+                        loader,
                         self.modrinth_kind,
                     ),
                     Message::ModrinthSearchFinished,
@@ -1140,8 +1156,12 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::InstallModrinthProject(project_id) => {
-                let Some(instance) = self.selected_instance().cloned() else {
-                    self.error_banner = Some("select an instance first".into());
+                let Some(instance) = self
+                    .selected_instance()
+                    .cloned()
+                    .or_else(|| self.instances.first().cloned())
+                else {
+                    self.error_banner = Some("create or select an instance first".into());
                     return Task::none();
                 };
                 self.modrinth_install_run_id = self.modrinth_install_run_id.wrapping_add(1);
@@ -1395,7 +1415,8 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::SettingsOpened => {
-                self.settings_open = true;
+                self.launcher_page = LauncherPage::Settings;
+                self.settings_open = false;
                 Task::none()
             }
             Message::SettingsClosed => {
@@ -1574,12 +1595,24 @@ impl SwiftLauncher {
                 &self.instances,
                 &self.avatar_cache,
                 self.window_width,
+                self.launcher_page,
                 &self.search,
                 self.sort,
                 self.list_view,
+                self.instance_loader_filter,
                 self.settings_open,
                 &self.settings,
                 &self.java_status,
+                self.resource_provider,
+                &self.modrinth_query,
+                self.modrinth_kind,
+                &self.modrinth_results,
+                self.modrinth_detail.as_ref(),
+                &self.modrinth_markdown,
+                self.modrinth_detail_busy,
+                &self.modrinth_install_status,
+                self.modrinth_install_progress,
+                self.modrinth_busy,
                 self.create_modal_open,
                 self.import_modal_open,
                 &self.create_versions,

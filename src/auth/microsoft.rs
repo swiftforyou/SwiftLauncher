@@ -165,6 +165,13 @@ fn map_microsoft_error(error: impl std::fmt::Display) -> AppError {
         AppError::Auth(
             "Microsoft rejected the client id. Use the Azure Application (client) ID, not object/tenant ID, and set Supported account types to personal Microsoft accounts or multitenant + personal accounts. Then enable public client/native flows.".into(),
         )
+    } else if message.contains("Invalid app registration")
+        || message.contains("/authentication/login_with_xbox")
+        || message.contains("aka.ms/AppRegInfo")
+    {
+        AppError::Auth(
+            "Minecraft rejected this launcher app registration. Azure sign-in worked, but Minecraft Services requires a valid/approved Minecraft app registration. Register/approve the app at https://aka.ms/AppRegInfo, then build Swift Launcher with that Application (client) ID.".into(),
+        )
     } else {
         AppError::Auth(message)
     }

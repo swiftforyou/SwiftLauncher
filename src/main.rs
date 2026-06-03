@@ -3,6 +3,7 @@
 
 mod app;
 mod auth;
+mod discord;
 mod download;
 mod error;
 mod icons;

@@ -11,12 +11,14 @@ use crate::theme;
 pub fn view<'a>(
     settings: &'a LauncherSettings,
     java_status: &'a str,
-    accounts: &'a [Session],
-    active: Option<&'a Session>,
+    _accounts: &'a [Session],
+    _active: Option<&'a Session>,
 ) -> Element<'a, Message> {
     let header = row![
         column![
-            text("Settings").size(24),
+            text("Settings")
+                .size(24)
+                .color(theme::DARK.palette().accent),
             text("Launcher preferences and account controls").size(13),
         ]
         .spacing(4),
@@ -25,18 +27,27 @@ pub fn view<'a>(
     .spacing(12)
     .align_y(Alignment::Center);
 
-    let content = column![
-        header,
-        section("Accounts", accounts_section(accounts, active)),
+    let body = column![
         section("Java", java(settings, java_status)),
         section("Game", game(settings)),
         section("Integrations", integrations(settings)),
         section("About", about()),
     ]
-    .spacing(14)
-    .padding(18);
+    .spacing(14);
 
-    container(scrollable(content))
+    let content = column![
+        header,
+        scrollable(
+            container(body)
+                .padding(theme::scrollbar_gutter())
+                .width(Length::Fill),
+        )
+        .height(Length::Fill)
+        .style(theme::scrollable),
+    ]
+    .spacing(14);
+
+    container(content)
         .width(Length::Fill)
         .height(Length::Fill)
         .style(theme::app_container)
@@ -44,53 +55,16 @@ pub fn view<'a>(
 }
 
 fn section<'a>(title: &'static str, body: Element<'a, Message>) -> Element<'a, Message> {
-    container(column![text(title).size(18), body].spacing(10))
-        .padding(14)
-        .style(theme::card)
-        .width(Length::Fill)
-        .into()
-}
-
-fn accounts_section<'a>(
-    accounts: &'a [Session],
-    active: Option<&'a Session>,
-) -> Element<'a, Message> {
-    let mut list = column![].spacing(8);
-    if accounts.is_empty() {
-        list = list.push(text("No saved accounts yet").size(13));
-    }
-    for account in accounts {
-        let is_active = active.is_some_and(|session| session.uuid == account.uuid);
-        list = list.push(
-            row![
-                column![
-                    text(format!(
-                        "{}{}",
-                        account.username,
-                        if is_active { " (active)" } else { "" }
-                    ))
-                    .size(14),
-                    text(format!("{} • {}", account.provider, account.uuid)).size(11),
-                ]
-                .spacing(2),
-                Space::with_width(Length::Fill),
-                button("Use")
-                    .on_press(Message::AccountSelected(account.uuid.clone()))
-                    .style(theme::secondary_button),
-                button("Remove")
-                    .on_press(Message::SignOut(account.uuid.clone()))
-                    .style(theme::danger_button),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        );
-    }
-
-    list.push(
-        button("Add Account")
-            .on_press(Message::AddAccount)
-            .style(theme::primary_button),
+    container(
+        column![
+            text(title).size(18).color(theme::DARK.palette().accent),
+            body
+        ]
+        .spacing(10),
     )
+    .padding(14)
+    .style(theme::card)
+    .width(Length::Fill)
     .into()
 }
 
@@ -116,7 +90,8 @@ fn java<'a>(settings: &'a LauncherSettings, java_status: &'a str) -> Element<'a,
                 settings.default_ram_mb,
                 Message::DefaultRamChanged
             )
-            .step(256_u32),
+            .step(256_u32)
+            .style(theme::slider),
         ]
         .spacing(10)
         .align_y(Alignment::Center),
@@ -149,17 +124,25 @@ fn java<'a>(settings: &'a LauncherSettings, java_status: &'a str) -> Element<'a,
 
 fn game(settings: &LauncherSettings) -> Element<'_, Message> {
     column![
-        text_input(
-            "Default game directory",
-            &settings.default_game_dir.display().to_string()
-        )
-        .on_input(Message::DefaultGameDirChanged)
-        .style(theme::input)
-        .padding(10),
+        row![
+            text_input(
+                "Default game directory",
+                &settings.default_game_dir.display().to_string()
+            )
+            .on_input(Message::DefaultGameDirChanged)
+            .style(theme::input)
+            .padding(10),
+            button("Choose")
+                .on_press(Message::PickDefaultGameDir)
+                .style(theme::secondary_button),
+        ]
+        .spacing(8),
         checkbox("Discord Rich Presence", settings.discord_presence)
-            .on_toggle(Message::DiscordPresenceChanged),
+            .on_toggle(Message::DiscordPresenceChanged)
+            .style(theme::checkbox),
         checkbox("Crash reporter", settings.crash_reporter)
-            .on_toggle(Message::CrashReporterChanged),
+            .on_toggle(Message::CrashReporterChanged)
+            .style(theme::checkbox),
     ]
     .spacing(10)
     .into()
@@ -168,11 +151,14 @@ fn game(settings: &LauncherSettings) -> Element<'_, Message> {
 fn integrations(settings: &LauncherSettings) -> Element<'_, Message> {
     column![
         text("CurseForge API key").size(13),
-        text_input("Paste key here for CurseForge modpack imports", &settings.curseforge_api_key)
-            .on_input(Message::CurseForgeApiKeyChanged)
-            .secure(true)
-            .style(theme::input)
-            .padding(10),
+        text_input(
+            "Paste key here for CurseForge modpack imports",
+            &settings.curseforge_api_key
+        )
+        .on_input(Message::CurseForgeApiKeyChanged)
+        .secure(true)
+        .style(theme::input)
+        .padding(10),
         text("Saved locally. Pack players do not need shell exports.").size(12),
     ]
     .spacing(8)

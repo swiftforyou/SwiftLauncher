@@ -36,9 +36,11 @@ pub async fn import_instance(
         .map_err(|error| AppError::Instance(error.to_string()))??;
 
     match kind {
-        ImportKind::Swift => tokio::task::spawn_blocking(move || import_swift_blocking(&archive_path))
-            .await
-            .map_err(|error| AppError::Instance(error.to_string()))?,
+        ImportKind::Swift => {
+            tokio::task::spawn_blocking(move || import_swift_blocking(&archive_path))
+                .await
+                .map_err(|error| AppError::Instance(error.to_string()))?
+        }
         ImportKind::Modrinth => import_mrpack(archive_path).await,
         ImportKind::Prism => {
             tokio::task::spawn_blocking(move || import_prism_blocking(&archive_path))

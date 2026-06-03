@@ -199,7 +199,9 @@ fn overview<'a>(
     content = content.push(
         column![
             text(format!("RAM: {} MB", instance.ram_mb)),
-            slider(512..=16384, instance.ram_mb, Message::RamChanged).step(256_u32),
+            slider(512..=16384, instance.ram_mb, Message::RamChanged)
+                .step(256_u32)
+                .style(theme::slider),
             text_input("Java path", &instance.java_path)
                 .on_input(Message::JavaPathChanged)
                 .style(theme::input)
@@ -209,8 +211,13 @@ fn overview<'a>(
                 .style(theme::input)
                 .padding(10),
             container(
-                scrollable(text(log_text).size(11).font(Font::MONOSPACE))
-                    .height(Length::Fixed(120.0)),
+                scrollable(
+                    container(text(log_text).size(11).font(Font::MONOSPACE))
+                        .padding(theme::scrollbar_gutter())
+                        .width(Length::Fill),
+                )
+                .style(theme::scrollable)
+                .height(Length::Fixed(120.0)),
             )
             .padding(12)
             .style(theme::card),
@@ -236,14 +243,14 @@ fn stat_card(label: &'static str, value: String) -> Element<'static, Message> {
 fn mods<'a>(
     mods_search: &'a str,
     mod_import_path: &'a str,
-    modrinth_query: &'a str,
-    resource_provider: ResourceProvider,
-    modrinth_kind: ModrinthKind,
-    modrinth_results: &'a [ModrinthProject],
-    modrinth_detail: Option<&'a ModrinthProjectDetail>,
-    modrinth_markdown: &'a [markdown::Item],
-    modrinth_detail_busy: bool,
-    modrinth_busy: bool,
+    _modrinth_query: &'a str,
+    _resource_provider: ResourceProvider,
+    _modrinth_kind: ModrinthKind,
+    _modrinth_results: &'a [ModrinthProject],
+    _modrinth_detail: Option<&'a ModrinthProjectDetail>,
+    _modrinth_markdown: &'a [markdown::Item],
+    _modrinth_detail_busy: bool,
+    _modrinth_busy: bool,
     installed_mods: &'a [InstalledMod],
     mod_categories: &'a [String],
     new_mod_category: &'a str,
@@ -251,18 +258,6 @@ fn mods<'a>(
     modrinth_install_status: &'a str,
     modrinth_install_progress: f32,
 ) -> Element<'a, Message> {
-    if let Some(detail) = modrinth_detail {
-        return modrinth_detail_view(
-            detail,
-            modrinth_markdown,
-            loading,
-            modrinth_install_status,
-            modrinth_install_progress,
-        );
-    }
-    if modrinth_detail_busy {
-        return loading_row("Loading project...");
-    }
     let search = mods_search.to_lowercase();
     let filtered = installed_mods
         .iter()
@@ -304,35 +299,17 @@ fn mods<'a>(
 
     let content = column![
         row![
-            pick_list(
-                ResourceProvider::ALL,
-                Some(resource_provider),
-                Message::ResourceProviderSelected
-            )
-            .style(theme::pick_list)
-            .menu_style(theme::pick_list_menu),
+            column![
+                text("Local Mods").size(22),
+                text(
+                    "Manage installed files only. Search and download new resources from Discover."
+                )
+                .size(12),
+            ]
+            .spacing(4),
             Space::with_width(Length::Fill),
-        ],
-        modrinth_kind_selector(modrinth_kind),
-        row![
-            text_input("Search resources", modrinth_query)
-                .on_input(Message::ModrinthSearchChanged)
-                .style(theme::input)
-                .padding(10),
-            button(if modrinth_busy {
-                "Searching..."
-            } else {
-                "Search"
-            })
-            .on_press(if modrinth_busy {
-                Message::Noop
-            } else {
-                Message::SearchModrinth
-            })
-            .style(theme::primary_button),
         ]
-        .spacing(8),
-        modrinth_results_view(modrinth_results, modrinth_busy),
+        .align_y(Alignment::Center),
         row![
             text_input("Search mods", mods_search)
                 .on_input(Message::ModsSearchChanged)
@@ -374,6 +351,7 @@ fn mods<'a>(
     scrollable(container(content).padding([0, 18]).width(Length::Fill))
         .height(Length::Fill)
         .width(Length::Fill)
+        .style(theme::scrollable)
         .into()
 }
 
@@ -518,6 +496,7 @@ fn modrinth_detail_view<'a>(
     body = body.push(markdown_body);
     scrollable(container(body).padding([0, 18]).width(Length::Fill))
         .height(Length::Fill)
+        .style(theme::scrollable)
         .into()
 }
 
@@ -581,10 +560,12 @@ fn mod_row<'a>(item: &'a InstalledMod, categories: &'a [String]) -> Element<'a, 
     container(
         row![
             project_icon(item.icon.as_ref(), 34.0),
-            checkbox("", item.enabled).on_toggle(move |enabled| Message::ToggleMod {
-                mod_id: id.clone(),
-                enabled
-            }),
+            checkbox("", item.enabled)
+                .on_toggle(move |enabled| Message::ToggleMod {
+                    mod_id: id.clone(),
+                    enabled
+                })
+                .style(theme::checkbox),
             column![
                 text(&item.name).size(14),
                 text(format!(
@@ -596,17 +577,13 @@ fn mod_row<'a>(item: &'a InstalledMod, categories: &'a [String]) -> Element<'a, 
             ]
             .spacing(2),
             Space::with_width(Length::Fill),
-            pick_list(
-                categories.to_vec(),
-                Some(item.category.clone()),
-                {
-                    let mod_id = item.id.clone();
-                    move |category| Message::ModCategoryChanged {
-                        mod_id: mod_id.clone(),
-                        category,
-                    }
+            pick_list(categories.to_vec(), Some(item.category.clone()), {
+                let mod_id = item.id.clone();
+                move |category| Message::ModCategoryChanged {
+                    mod_id: mod_id.clone(),
+                    category,
                 }
-            )
+            })
             .style(theme::pick_list)
             .menu_style(theme::pick_list_menu),
             icon_button(
@@ -707,25 +684,19 @@ fn logs<'a>(
         .center_y(Length::Fill)
         .into()
     } else {
-        let mut col = column![text(status_line).size(12)].spacing(8);
+        let mut col = column![text(status_line).size(12)].spacing(4);
         for line in launch_log.iter() {
-            let style = if line.contains("stderr:") || line.to_ascii_lowercase().contains("error") {
-                theme::DARK.palette().danger
-            } else if line.to_ascii_lowercase().contains("warn") {
-                theme::DARK.palette().warning
-            } else {
-                theme::DARK.palette().text
-            };
-            col = col.push(
-                container(text(line).size(11).font(Font::MONOSPACE).color(style))
-                    .padding([2, 0])
-                    .width(Length::Fill),
-            );
+            col = col.push(log_line(line));
         }
-        scrollable(col)
-            .id(iced::widget::scrollable::Id::new("launch-log-scroll"))
-            .height(Length::Fill)
-            .into()
+        scrollable(
+            container(col)
+                .padding(theme::scrollbar_gutter())
+                .width(Length::Fill),
+        )
+        .id(iced::widget::scrollable::Id::new("launch-log-scroll"))
+        .height(Length::Fill)
+        .style(theme::scrollable)
+        .into()
     };
 
     let mut layout = column![row![
@@ -755,6 +726,108 @@ fn logs<'a>(
     layout.into()
 }
 
+fn log_line(raw: &str) -> Element<'_, Message> {
+    let entry = ParsedLogLine::parse(raw);
+    let level_color = match entry.level.as_str() {
+        "ERROR" => theme::DARK.palette().danger,
+        "WARN" => theme::DARK.palette().warning,
+        "INFO" => theme::DARK.palette().success,
+        _ => theme::DARK.palette().muted,
+    };
+    container(
+        row![
+            text(entry.time)
+                .size(11)
+                .font(Font::MONOSPACE)
+                .width(Length::Fixed(82.0)),
+            text(entry.thread)
+                .size(11)
+                .font(Font::MONOSPACE)
+                .width(Length::Fixed(112.0)),
+            text(entry.level)
+                .size(11)
+                .font(Font::MONOSPACE)
+                .color(level_color)
+                .width(Length::Fixed(48.0)),
+            text(entry.message)
+                .size(11)
+                .font(Font::MONOSPACE)
+                .color(theme::DARK.palette().text)
+                .width(Length::Fill),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .padding([1, 0])
+    .width(Length::Fill)
+    .into()
+}
+
+struct ParsedLogLine {
+    time: String,
+    thread: String,
+    level: String,
+    message: String,
+}
+
+impl ParsedLogLine {
+    fn parse(raw: &str) -> Self {
+        let mut line = raw
+            .strip_prefix("stdout: ")
+            .or_else(|| raw.strip_prefix("stderr: "))
+            .unwrap_or(raw)
+            .trim()
+            .to_string();
+        let fallback_level =
+            if raw.starts_with("stderr:") || line.to_ascii_lowercase().contains("error") {
+                "ERROR"
+            } else if line.to_ascii_lowercase().contains("warn") {
+                "WARN"
+            } else {
+                "INFO"
+            };
+
+        if let Some(rest) = line.strip_prefix('[') {
+            if let Some((time, rest)) = rest.split_once("] [") {
+                if let Some((thread_and_level, message)) = rest.split_once("]:") {
+                    let (thread, level) = thread_and_level
+                        .rsplit_once('/')
+                        .unwrap_or((thread_and_level, fallback_level));
+                    return Self {
+                        time: format!("{}.000", time.trim()),
+                        thread: compact_thread(thread),
+                        level: level.trim().to_string(),
+                        message: message.trim().to_string(),
+                    };
+                }
+            }
+        }
+
+        let level = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"]
+            .into_iter()
+            .find(|level| line.contains(level))
+            .unwrap_or(fallback_level);
+        line = line.replace("stdout:", "").replace("stderr:", "");
+        Self {
+            time: "--:--:--.---".into(),
+            thread: "Launcher".into(),
+            level: level.into(),
+            message: line.trim().to_string(),
+        }
+    }
+}
+
+fn compact_thread(thread: &str) -> String {
+    thread
+        .split('/')
+        .next()
+        .unwrap_or(thread)
+        .trim()
+        .chars()
+        .take(18)
+        .collect()
+}
+
 fn settings(instance: &Instance) -> Element<'_, Message> {
     column![
         row![
@@ -768,7 +841,9 @@ fn settings(instance: &Instance) -> Element<'_, Message> {
                 .padding(10),
         ]
         .spacing(8),
-        checkbox("Fullscreen", instance.fullscreen).on_toggle(Message::FullscreenChanged),
+        checkbox("Fullscreen", instance.fullscreen)
+            .on_toggle(Message::FullscreenChanged)
+            .style(theme::checkbox),
         text_input("Game directory override", &instance.game_dir_override)
             .on_input(Message::GameDirOverrideChanged)
             .style(theme::input)

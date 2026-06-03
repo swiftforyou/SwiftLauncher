@@ -1,9 +1,11 @@
-use iced::widget::{button, container, svg};
+use iced::widget::{button, container, image, svg};
 use iced::{Element, Length};
+use std::sync::LazyLock;
 
 use crate::messages::Message;
 
 pub const LOGO: &[u8] = include_bytes!("../assets/logo.svg");
+pub const INSTANCE_BANNER: &[u8] = include_bytes!("../assets/images/instance_banner.png");
 pub const HOME: &[u8] = include_bytes!("../assets/icons/home.svg");
 pub const ADD: &[u8] = include_bytes!("../assets/icons/add.svg");
 pub const ALERT: &[u8] = include_bytes!("../assets/icons/alert.svg");
@@ -22,9 +24,25 @@ pub const MODS: &[u8] = include_bytes!("../assets/icons/mods.svg");
 pub const PLAY: &[u8] = include_bytes!("../assets/icons/play.svg");
 pub const SETTINGS: &[u8] = include_bytes!("../assets/icons/settings.svg");
 pub const STOP: &[u8] = include_bytes!("../assets/icons/stop.svg");
+pub static AUTH_MICROSOFT: LazyLock<image::Handle> = LazyLock::new(|| {
+    image::Handle::from_bytes(include_bytes!("../assets/auth/microsoft.png").to_vec())
+});
+pub static AUTH_ELYBY: LazyLock<image::Handle> = LazyLock::new(|| {
+    image::Handle::from_bytes(include_bytes!("../assets/auth/elyby.png").to_vec())
+});
+pub static AUTH_LITTLESKIN: LazyLock<image::Handle> = LazyLock::new(|| {
+    image::Handle::from_bytes(include_bytes!("../assets/auth/littleskin.png").to_vec())
+});
 
 pub fn svg_icon(bytes: &'static [u8], size: f32) -> Element<'static, Message> {
     svg(svg::Handle::from_memory(bytes))
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .into()
+}
+
+pub fn png_icon(handle: &'static LazyLock<image::Handle>, size: f32) -> Element<'static, Message> {
+    image((**handle).clone())
         .width(Length::Fixed(size))
         .height(Length::Fixed(size))
         .into()

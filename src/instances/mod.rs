@@ -14,13 +14,23 @@ use serde::{Deserialize, Serialize};
 use crate::error::AppError;
 use crate::storage::{data_dir, SledStore, KEY_INSTANCE_PREFIX};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LoaderKind {
     Vanilla,
     Fabric,
     Forge,
     NeoForge,
     Quilt,
+}
+
+impl LoaderKind {
+    pub const ALL: [Self; 5] = [
+        Self::Vanilla,
+        Self::Fabric,
+        Self::Forge,
+        Self::NeoForge,
+        Self::Quilt,
+    ];
 }
 
 impl std::fmt::Display for LoaderKind {

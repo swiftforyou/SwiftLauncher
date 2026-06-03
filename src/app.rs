@@ -73,6 +73,8 @@ pub struct SwiftLauncher {
     modrinth_query: String,
     resource_provider: ResourceProvider,
     modrinth_kind: ModrinthKind,
+    discover_loader: LoaderKind,
+    discover_version: String,
     modrinth_results: Vec<ModrinthProject>,
     modrinth_detail: Option<ModrinthProjectDetail>,
     modrinth_markdown: Vec<markdown::Item>,
@@ -99,6 +101,16 @@ pub struct SwiftLauncher {
     launch_progress_by_instance: HashMap<String, f32>,
     last_auto_scrolled_log_len: usize,
     adding_account: bool,
+    instance_selection_modal_open: bool,
+    pending_install_project_id: Option<String>,
+    pending_install_kind: ModrinthKind,
+    pending_install_provider: ResourceProvider,
+    pending_install_project_loaders: Vec<String>,
+    pending_install_targets: Vec<(String, String)>,
+    instance_selection_installing: bool,
+    instance_selection_install_status: String,
+    instance_selection_install_progress: f32,
+    instance_selection_selected_instance: Option<String>,
 }
 
 #[derive(Clone)]
@@ -174,6 +186,8 @@ impl SwiftLauncher {
             modrinth_query: String::new(),
             resource_provider: ResourceProvider::Modrinth,
             modrinth_kind: ModrinthKind::Mods,
+            discover_loader: LoaderKind::Fabric,
+            discover_version: "1.21.8".into(),
             modrinth_results: Vec::new(),
             modrinth_detail: None,
             modrinth_markdown: Vec::new(),
@@ -200,6 +214,16 @@ impl SwiftLauncher {
             launch_progress_by_instance: HashMap::new(),
             last_auto_scrolled_log_len: 0,
             adding_account: false,
+            instance_selection_modal_open: false,
+            pending_install_project_id: None,
+            pending_install_kind: ModrinthKind::Mods,
+            pending_install_provider: ResourceProvider::Modrinth,
+            pending_install_project_loaders: Vec::new(),
+            pending_install_targets: Vec::new(),
+            instance_selection_installing: false,
+            instance_selection_install_status: String::new(),
+            instance_selection_install_progress: 0.0,
+            instance_selection_selected_instance: None,
         };
         (app, Task::perform(startup(), Message::StartupFinished))
     }
@@ -253,10 +277,16 @@ impl SwiftLauncher {
                             )
                         })
                         .collect();
+                    let version_task = Task::perform(
+                        crate::instances::create::fetch_available_versions(),
+                        Message::VersionsLoaded,
+                    );
                     if avatar_tasks.is_empty() {
-                        Task::none()
+                        version_task
                     } else {
-                        Task::batch(avatar_tasks)
+                        let mut tasks = avatar_tasks;
+                        tasks.push(version_task);
+                        Task::batch(tasks)
                     }
                 }
                 Err(error) => {
@@ -297,7 +327,17 @@ impl SwiftLauncher {
             Message::LauncherPageSelected(page) => {
                 self.launcher_page = page;
                 self.settings_open = false;
-                Task::none()
+                if matches!(page, LauncherPage::Discover)
+                    && self.create_versions.len()
+                        <= crate::instances::create::fallback_versions().len()
+                {
+                    Task::perform(
+                        crate::instances::create::fetch_available_versions(),
+                        Message::VersionsLoaded,
+                    )
+                } else {
+                    Task::none()
+                }
             }
             Message::SearchChanged(value) => {
                 self.search = value;
@@ -401,12 +441,25 @@ impl SwiftLauncher {
                 match result {
                     Ok(versions) => {
                         if !versions.is_empty() {
+                            let fallback_latest = crate::instances::create::fallback_versions()
+                                .first()
+                                .cloned()
+                                .unwrap_or_default();
                             if self.create_version.is_empty()
+                                || self.create_version == fallback_latest
                                 || !versions
                                     .iter()
                                     .any(|version| version == &self.create_version)
                             {
                                 self.create_version = versions[0].clone();
+                            }
+                            if self.discover_version.is_empty()
+                                || self.discover_version == fallback_latest
+                                || !versions
+                                    .iter()
+                                    .any(|version| version == &self.discover_version)
+                            {
+                                self.discover_version = versions[0].clone();
                             }
                             self.create_versions = versions;
                         }
@@ -738,6 +791,10 @@ impl SwiftLauncher {
                 self.push_instance_launch_log(&instance_id, line);
                 Task::none()
             }
+            Message::LaunchOutputBatch { instance_id, lines } => {
+                self.push_instance_launch_logs(&instance_id, lines);
+                Task::none()
+            }
             Message::LaunchExited {
                 instance_id,
                 status,
@@ -972,7 +1029,8 @@ impl SwiftLauncher {
                 self.mods_loading = false;
                 match result {
                     Ok(mods) => {
-                        self.mod_categories = crate::instances::mods::categories_from_installed(&mods);
+                        self.mod_categories =
+                            crate::instances::mods::categories_from_installed(&mods);
                         self.installed_mods = mods;
                     }
                     Err(error) => self.error_banner = Some(error.to_string()),
@@ -998,7 +1056,8 @@ impl SwiftLauncher {
                 self.mods_loading = false;
                 match result {
                     Ok(mods) => {
-                        self.mod_categories = crate::instances::mods::categories_from_installed(&mods);
+                        self.mod_categories =
+                            crate::instances::mods::categories_from_installed(&mods);
                         self.installed_mods = mods;
                     }
                     Err(error) => self.error_banner = Some(error.to_string()),
@@ -1020,12 +1079,34 @@ impl SwiftLauncher {
                 self.mods_loading = false;
                 match result {
                     Ok(mods) => {
-                        self.mod_categories = crate::instances::mods::categories_from_installed(&mods);
+                        self.mod_categories =
+                            crate::instances::mods::categories_from_installed(&mods);
                         self.installed_mods = mods;
                     }
                     Err(error) => self.error_banner = Some(error.to_string()),
                 }
                 Task::none()
+            }
+            Message::UninstallFromInstance {
+                instance_id,
+                mod_id,
+            } => {
+                let Some(instance) = self
+                    .instances
+                    .iter()
+                    .find(|instance| instance.id == instance_id)
+                    .cloned()
+                else {
+                    self.error_banner = Some("instance not found".into());
+                    return Task::none();
+                };
+                self.pending_install_targets
+                    .retain(|(target_id, _)| target_id != &instance_id);
+                self.mods_loading = true;
+                Task::perform(
+                    crate::instances::mods::delete_mod(instance.path, mod_id),
+                    Message::ModDeleted,
+                )
             }
             Message::AddMod => {
                 self.mod_import_path.clear();
@@ -1070,7 +1151,8 @@ impl SwiftLauncher {
                 self.mods_loading = false;
                 match result {
                     Ok(mods) => {
-                        self.mod_categories = crate::instances::mods::categories_from_installed(&mods);
+                        self.mod_categories =
+                            crate::instances::mods::categories_from_installed(&mods);
                         self.installed_mods = mods;
                         self.mod_import_path.clear();
                     }
@@ -1096,16 +1178,26 @@ impl SwiftLauncher {
                 self.modrinth_markdown.clear();
                 Task::none()
             }
+            Message::DiscoverLoaderSelected(loader) => {
+                self.discover_loader = loader;
+                self.modrinth_results.clear();
+                self.modrinth_detail = None;
+                self.modrinth_markdown.clear();
+                Task::none()
+            }
+            Message::DiscoverVersionSelected(version) => {
+                self.discover_version = version;
+                self.modrinth_results.clear();
+                self.modrinth_detail = None;
+                self.modrinth_markdown.clear();
+                Task::none()
+            }
             Message::SearchModrinth => {
-                let instance = self
-                    .selected_instance()
-                    .cloned()
-                    .or_else(|| self.instances.first().cloned());
-                let (minecraft_version, loader) = instance
-                    .map(|instance| (instance.minecraft_version, instance.loader))
-                    .unwrap_or_else(|| ("1.21.8".into(), LoaderKind::Fabric));
+                self.selected_instance = None;
+                let minecraft_version = self.discover_version.clone();
+                let loader = self.discover_loader;
                 self.modrinth_busy = true;
-                Task::perform(
+                let search_task = Task::perform(
                     crate::instances::mods::search_resources(
                         self.resource_provider,
                         self.settings.curseforge_api_key.clone(),
@@ -1115,7 +1207,8 @@ impl SwiftLauncher {
                         self.modrinth_kind,
                     ),
                     Message::ModrinthSearchFinished,
-                )
+                );
+                Task::batch([search_task, self.load_selected_mods()])
             }
             Message::ModrinthSearchFinished(result) => {
                 self.modrinth_busy = false;
@@ -1126,6 +1219,7 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::OpenModrinthProject(project_id) => {
+                self.selected_instance = None;
                 self.modrinth_detail = None;
                 self.modrinth_markdown.clear();
                 self.modrinth_detail_busy = true;
@@ -1155,26 +1249,88 @@ impl SwiftLauncher {
                 self.modrinth_markdown.clear();
                 Task::none()
             }
-            Message::InstallModrinthProject(project_id) => {
-                let Some(instance) = self
-                    .selected_instance()
-                    .cloned()
-                    .or_else(|| self.instances.first().cloned())
+            Message::OpenInstanceSelectionModal {
+                project_id,
+                kind,
+                provider,
+            } => {
+                self.selected_instance = None;
+                if self.instances.is_empty() {
+                    self.error_banner = Some("Create an instance first".into());
+                    return Task::none();
+                }
+                self.instance_selection_modal_open = true;
+                self.pending_install_project_id = Some(project_id.clone());
+                self.pending_install_kind = kind;
+                self.pending_install_provider = provider;
+                // Get loaders from search results if available
+                self.pending_install_project_loaders = self
+                    .modrinth_results
+                    .iter()
+                    .find(|p| p.project_id == project_id)
+                    .map(|p| p.loaders.clone())
+                    .unwrap_or_default();
+                self.pending_install_targets.clear();
+                let instances = self.instances.clone();
+                let title = self
+                    .modrinth_detail
+                    .as_ref()
+                    .filter(|detail| detail.project_id == project_id)
+                    .map(|detail| detail.title.clone())
+                    .or_else(|| {
+                        self.modrinth_results
+                            .iter()
+                            .find(|item| item.project_id == project_id)
+                            .map(|item| item.title.clone())
+                    })
+                    .unwrap_or_else(|| project_id.clone());
+                let slug = self
+                    .modrinth_results
+                    .iter()
+                    .find(|item| item.project_id == project_id)
+                    .map(|item| item.slug.clone())
+                    .unwrap_or_default();
+                Task::perform(
+                    resolve_install_targets(instances, project_id, title, slug),
+                    Message::InstallTargetsResolved,
+                )
+            }
+            Message::InstallTargetsResolved(targets) => {
+                self.pending_install_targets = targets;
+                Task::none()
+            }
+            Message::CloseInstanceSelectionModal => {
+                self.instance_selection_modal_open = false;
+                self.pending_install_project_id = None;
+                self.pending_install_project_loaders.clear();
+                self.pending_install_targets.clear();
+                self.instance_selection_installing = false;
+                self.instance_selection_install_status.clear();
+                self.instance_selection_install_progress = 0.0;
+                self.instance_selection_selected_instance = None;
+                Task::none()
+            }
+            Message::InstallToInstance {
+                instance_id,
+                project_id,
+            } => {
+                let Some(instance) = self.instances.iter().find(|i| i.id == instance_id).cloned()
                 else {
-                    self.error_banner = Some("create or select an instance first".into());
+                    self.error_banner = Some("instance not found".into());
                     return Task::none();
                 };
+
+                // Keep modal open and show installing state
+                self.instance_selection_installing = true;
+                self.instance_selection_selected_instance = Some(instance.name.clone());
+                self.instance_selection_install_status = "Preparing to install...".to_string();
+                self.instance_selection_install_progress = 0.01;
+
+                // Start installation
                 self.modrinth_install_run_id = self.modrinth_install_run_id.wrapping_add(1);
-                let provider = self
-                    .modrinth_detail
-                    .as_ref()
-                    .map(|detail| detail.provider)
-                    .unwrap_or(self.resource_provider);
-                let kind = self
-                    .modrinth_detail
-                    .as_ref()
-                    .map(|detail| detail.kind)
-                    .unwrap_or(self.modrinth_kind);
+                let provider = self.pending_install_provider;
+                let kind = self.pending_install_kind;
+
                 self.active_modrinth_install = Some(ActiveModrinthInstall {
                     run_id: self.modrinth_install_run_id,
                     provider,
@@ -1190,9 +1346,33 @@ impl SwiftLauncher {
                 self.mods_loading = true;
                 Task::none()
             }
+            Message::InstallModrinthProject(project_id) => {
+                // Open instance selection modal instead of installing directly
+                let provider = self
+                    .modrinth_detail
+                    .as_ref()
+                    .map(|detail| detail.provider)
+                    .unwrap_or(self.resource_provider);
+                let kind = self
+                    .modrinth_detail
+                    .as_ref()
+                    .map(|detail| detail.kind)
+                    .unwrap_or(self.modrinth_kind);
+
+                self.update(Message::OpenInstanceSelectionModal {
+                    project_id,
+                    kind,
+                    provider,
+                })
+            }
             Message::ModrinthProjectInstallProgress { status, progress } => {
-                self.modrinth_install_status = status;
+                self.modrinth_install_status = status.clone();
                 self.modrinth_install_progress = progress;
+                // Also update modal progress if it's open
+                if self.instance_selection_installing {
+                    self.instance_selection_install_status = status;
+                    self.instance_selection_install_progress = progress;
+                }
                 Task::none()
             }
             Message::ModrinthProjectInstalled(result) => {
@@ -1200,15 +1380,29 @@ impl SwiftLauncher {
                 self.active_modrinth_install = None;
                 match result {
                     Ok(mods) => {
-                        self.mod_categories = crate::instances::mods::categories_from_installed(&mods);
+                        self.mod_categories =
+                            crate::instances::mods::categories_from_installed(&mods);
                         self.installed_mods = mods;
                         self.modrinth_install_status = "Install complete".into();
                         self.modrinth_install_progress = 1.0;
+
+                        // Update modal with success state
+                        if self.instance_selection_installing {
+                            self.instance_selection_install_status = "Installation complete".into();
+                            self.instance_selection_install_progress = 1.0;
+                        }
                     }
                     Err(error) => {
                         let message = error.to_string();
                         self.modrinth_install_status = format!("Install failed: {message}");
-                        self.error_banner = Some(message);
+                        self.error_banner = Some(message.clone());
+
+                        // Update modal with error state
+                        if self.instance_selection_installing {
+                            self.instance_selection_install_status =
+                                format!("Install failed: {}", message);
+                            self.instance_selection_installing = false;
+                        }
                     }
                 }
                 Task::none()
@@ -1256,6 +1450,11 @@ impl SwiftLauncher {
             Message::AuthProviderSelected(provider) => {
                 self.login_provider = provider;
                 self.error_banner = None;
+                self.device_flow = None;
+                if provider != AuthProvider::Microsoft {
+                    self.auth_busy = false;
+                    self.microsoft_auth_id = self.microsoft_auth_id.wrapping_add(1);
+                }
                 Task::none()
             }
             Message::UsernameChanged(value) => {
@@ -1410,7 +1609,7 @@ impl SwiftLauncher {
                 self.error_banner = None;
                 if self.active_session.is_some() {
                     self.state = AppState::Home;
-                    self.settings_open = true;
+                    self.launcher_page = LauncherPage::Settings;
                 }
                 Task::none()
             }
@@ -1525,12 +1724,29 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::DefaultGameDirChanged(value) => {
+                if value.trim().is_empty() {
+                    return Task::none();
+                }
                 self.settings.default_game_dir = value.into();
                 self.persist_settings();
                 Task::none()
             }
+            Message::PickDefaultGameDir => Task::perform(
+                crate::system::pick_folder("Choose default game directory"),
+                |path| {
+                    Message::DefaultGameDirChanged(
+                        path.map(|path| path.display().to_string())
+                            .unwrap_or_default(),
+                    )
+                },
+            ),
             Message::DiscordPresenceChanged(value) => {
                 self.settings.discord_presence = value;
+                if value && crate::discord::configured_client_id().is_none() {
+                    self.error_banner = Some(
+                        "Discord Rich Presence enabled, but no Discord client id is bundled".into(),
+                    );
+                }
                 self.persist_settings();
                 Task::none()
             }
@@ -1589,6 +1805,7 @@ impl SwiftLauncher {
                     .as_ref()
                     .map(|(code, url)| (code.as_str(), url.as_str())),
                 self.adding_account,
+                self.window_width,
             ),
             AppState::Home => crate::screens::home::view(
                 self.active_session.as_ref(),
@@ -1606,6 +1823,8 @@ impl SwiftLauncher {
                 self.resource_provider,
                 &self.modrinth_query,
                 self.modrinth_kind,
+                self.discover_loader,
+                &self.discover_version,
                 &self.modrinth_results,
                 self.modrinth_detail.as_ref(),
                 &self.modrinth_markdown,
@@ -1632,6 +1851,16 @@ impl SwiftLauncher {
                 self.account_menu_open,
                 self.error_banner.as_deref(),
                 self.delete_confirm_id.as_deref(),
+                self.instance_selection_modal_open,
+                self.pending_install_project_id.as_deref(),
+                self.pending_install_kind,
+                &self.pending_install_project_loaders,
+                self.instance_selection_installing,
+                &self.instance_selection_install_status,
+                self.instance_selection_install_progress,
+                self.instance_selection_selected_instance.as_deref(),
+                &self.pending_install_targets,
+                &self.installed_mods,
             ),
         };
 
@@ -1677,7 +1906,18 @@ impl SwiftLauncher {
                     launch_status,
                     launch_progress,
                 );
-                return iced::widget::stack![base, detail]
+                let dialog_width = (self.window_width - 96.0).clamp(760.0, 1120.0);
+                let dialog = iced::widget::container(detail)
+                    .width(Length::Fixed(dialog_width))
+                    .height(Length::Fixed(720.0))
+                    .padding([34, 0]);
+                let overlay = iced::widget::container(dialog)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .style(crate::theme::scrim);
+                return iced::widget::stack![base, overlay]
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .into();
@@ -1721,6 +1961,7 @@ impl SwiftLauncher {
                 launch.session.clone(),
                 launch.stop_tx.subscribe(),
                 self.settings.crash_reporter,
+                self.settings.discord_presence,
             ));
         }
 
@@ -1776,12 +2017,16 @@ impl SwiftLauncher {
     }
 
     fn push_instance_launch_log(&mut self, instance_id: &str, line: String) {
+        self.push_instance_launch_logs(instance_id, vec![line]);
+    }
+
+    fn push_instance_launch_logs(&mut self, instance_id: &str, lines: Vec<String>) {
         const MAX_LOG_LINES: usize = 700;
         let log = self
             .launch_logs_by_instance
             .entry(instance_id.to_string())
             .or_default();
-        log.push(line);
+        log.extend(lines);
         if log.len() > MAX_LOG_LINES {
             let overflow = log.len() - MAX_LOG_LINES;
             log.drain(0..overflow);
@@ -1837,6 +2082,49 @@ impl SwiftLauncher {
             async move { crate::instances::mods::list_mods(&path).await },
             Message::ModsLoaded,
         )
+    }
+
+    fn filter_instances_by_compatibility(
+        &self,
+        kind: ModrinthKind,
+        project_loaders: &[String],
+    ) -> std::collections::HashMap<LoaderKind, Vec<&Instance>> {
+        use std::collections::HashMap;
+
+        let mut grouped: HashMap<LoaderKind, Vec<&Instance>> = HashMap::new();
+
+        // For resource packs and shaders, no loader filtering needed
+        if matches!(kind, ModrinthKind::ResourcePacks | ModrinthKind::Shaders) {
+            // Return all instances under a single "All" group (we'll use Vanilla as placeholder)
+            grouped.insert(LoaderKind::Vanilla, self.instances.iter().collect());
+            return grouped;
+        }
+
+        // For mods and modpacks, filter by loader compatibility
+        for instance in &self.instances {
+            let is_compatible = if project_loaders.is_empty() {
+                // If no loaders specified, compatible with all
+                true
+            } else {
+                // Check if instance loader matches any project loader
+                let instance_loader = match instance.loader {
+                    LoaderKind::Fabric => "fabric",
+                    LoaderKind::Quilt => "quilt",
+                    LoaderKind::Forge => "forge",
+                    LoaderKind::NeoForge => "neoforge",
+                    LoaderKind::Vanilla => "vanilla",
+                };
+                project_loaders
+                    .iter()
+                    .any(|loader| loader.eq_ignore_ascii_case(instance_loader))
+            };
+
+            if is_compatible {
+                grouped.entry(instance.loader).or_default().push(instance);
+            }
+        }
+
+        grouped
     }
 
     fn open_instance_path_task(&mut self, id: &str, child: &str) -> Task<Message> {
@@ -2016,6 +2304,7 @@ fn launch_subscription(
     session: Session,
     mut stop_rx: tokio::sync::watch::Receiver<bool>,
     crash_reporter: bool,
+    discord_presence: bool,
 ) -> Subscription<Message> {
     Subscription::run_with_id(
         ("launch-instance", id),
@@ -2086,6 +2375,7 @@ fn launch_subscription(
             let pid = child.id().unwrap_or_default();
             let mut monitor = crate::instances::launch_monitor::LaunchMonitor::new();
             let mut report_lines = Vec::new();
+            let mut pending_lines = Vec::new();
             let mut ready_sent = false;
             let _ = output
                 .send(Message::LaunchStarted {
@@ -2093,6 +2383,31 @@ fn launch_subscription(
                     pid,
                 })
                 .await;
+            if discord_presence {
+                match crate::discord::publish_activity(
+                    report_instance.name.clone(),
+                    report_instance.minecraft_version.clone(),
+                )
+                .await
+                {
+                    Ok(message) => {
+                        let _ = output
+                            .send(Message::LaunchOutput {
+                                instance_id: instance_id.clone(),
+                                line: message,
+                            })
+                            .await;
+                    }
+                    Err(error) => {
+                        let _ = output
+                            .send(Message::LaunchOutput {
+                                instance_id: instance_id.clone(),
+                                line: format!("Discord Rich Presence skipped: {error}"),
+                            })
+                            .await;
+                    }
+                }
+            }
 
             let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel();
             if let Some(stdout) = child.stdout.take() {
@@ -2101,11 +2416,16 @@ fn launch_subscription(
             if let Some(stderr) = child.stderr.take() {
                 tokio::spawn(forward_launch_lines(stderr, "stderr", line_tx));
             }
+            let mut flush_logs = tokio::time::interval(Duration::from_millis(80));
 
             loop {
                 tokio::select! {
                     Some(line) = line_rx.recv() => {
                         report_lines.push(line.clone());
+                        if report_lines.len() > 2_000 {
+                            let overflow = report_lines.len() - 2_000;
+                            report_lines.drain(0..overflow);
+                        }
                         if let Some(event) = monitor.on_line(&line) {
                             use crate::instances::launch_monitor::LaunchEvent;
                             if matches!(event, LaunchEvent::Ready) && !ready_sent {
@@ -2115,9 +2435,20 @@ fn launch_subscription(
                                 }).await;
                             }
                         }
-                        let _ = output.send(Message::LaunchOutput {
+                        pending_lines.push(line);
+                        if pending_lines.len() >= 80 {
+                            let lines = std::mem::take(&mut pending_lines);
+                            let _ = output.send(Message::LaunchOutputBatch {
+                                instance_id: instance_id.clone(),
+                                lines,
+                            }).await;
+                        }
+                    }
+                    _ = flush_logs.tick(), if !pending_lines.is_empty() => {
+                        let lines = std::mem::take(&mut pending_lines);
+                        let _ = output.send(Message::LaunchOutputBatch {
                             instance_id: instance_id.clone(),
-                            line,
+                            lines,
                         }).await;
                     }
                     changed = stop_rx.changed() => {
@@ -2130,6 +2461,13 @@ fn launch_subscription(
                         }
                     }
                     result = child.wait() => {
+                        if !pending_lines.is_empty() {
+                            let lines = std::mem::take(&mut pending_lines);
+                            let _ = output.send(Message::LaunchOutputBatch {
+                                instance_id: instance_id.clone(),
+                                lines,
+                            }).await;
+                        }
                         let runtime_seconds = monitor.started_at.elapsed().as_secs();
                         let process_success = matches!(result, Ok(status) if status.success());
                         let process_status = match result {
@@ -2154,6 +2492,9 @@ fn launch_subscription(
                         } else {
                             None
                         };
+                        if discord_presence {
+                            let _ = crate::discord::clear_activity().await;
+                        }
                         let _ = output.send(Message::LaunchExited {
                             instance_id: instance_id.clone(),
                             status,
@@ -2199,6 +2540,42 @@ fn apply_instance_defaults(instance: &mut Instance, settings: &settings::Launche
     if !settings.global_jvm_args.trim().is_empty() {
         instance.jvm_args = settings.global_jvm_args.clone();
     }
+}
+
+async fn resolve_install_targets(
+    instances: Vec<Instance>,
+    project_id: String,
+    title: String,
+    slug: String,
+) -> Vec<(String, String)> {
+    let project_id = normalize_resource_name(&project_id);
+    let title = normalize_resource_name(&title);
+    let slug = normalize_resource_name(&slug);
+    let mut out = Vec::new();
+    for instance in instances {
+        let Ok(mods) = crate::instances::mods::list_mods(&instance.path).await else {
+            continue;
+        };
+        if let Some(item) = mods.iter().find(|item| {
+            let name = normalize_resource_name(&item.name);
+            let id = normalize_resource_name(&item.id);
+            name == title
+                || (!slug.is_empty() && name == slug)
+                || (!project_id.is_empty() && id.contains(&project_id))
+                || (!slug.is_empty() && id.contains(&slug))
+        }) {
+            out.push((instance.id, item.id.clone()));
+        }
+    }
+    out
+}
+
+fn normalize_resource_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 async fn startup() -> Result<StartupData, AppError> {

@@ -94,7 +94,9 @@ pub fn required_java_for_minecraft_version(version: &str) -> u32 {
         .and_then(|value| value.parse::<u32>().ok())
         .unwrap_or(0);
 
-    if major > 1 || minor >= 20 && patch >= 5 || minor >= 21 {
+    if major >= 26 {
+        25
+    } else if major > 1 || minor >= 20 && patch >= 5 || minor >= 21 {
         21
     } else if minor >= 18 {
         17
@@ -114,7 +116,11 @@ fn parse_java_major(line: &str) -> Option<u32> {
 }
 
 fn java_is_suitable(found: u32, required: u32) -> bool {
-    found >= required
+    if required >= 21 {
+        found == required
+    } else {
+        found >= required
+    }
 }
 
 async fn managed_java(required_major: u32) -> Result<Option<JavaInfo>, AppError> {
@@ -323,5 +329,22 @@ fn java_binary_name() -> &'static str {
         "java.exe"
     } else {
         "java"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minecraft_26_uses_java_25() {
+        assert_eq!(required_java_for_minecraft_version("26.1"), 25);
+    }
+
+    #[test]
+    fn modern_minecraft_rejects_too_new_java() {
+        assert!(java_is_suitable(25, 25));
+        assert!(!java_is_suitable(26, 25));
+        assert!(java_is_suitable(17, 8));
     }
 }

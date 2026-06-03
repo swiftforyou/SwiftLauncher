@@ -63,6 +63,13 @@ pub async fn pick_file(
     .flatten()
 }
 
+pub async fn pick_folder(title: &'static str) -> Option<PathBuf> {
+    tokio::task::spawn_blocking(move || rfd::FileDialog::new().set_title(title).pick_folder())
+        .await
+        .ok()
+        .flatten()
+}
+
 pub async fn save_file(
     title: &'static str,
     file_name: String,

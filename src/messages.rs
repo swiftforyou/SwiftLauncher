@@ -16,7 +16,6 @@ pub enum LauncherPage {
     Instances,
     Discover,
     Accounts,
-    Downloads,
     Settings,
 }
 
@@ -86,6 +85,10 @@ pub enum Message {
         instance_id: String,
         line: String,
     },
+    LaunchOutputBatch {
+        instance_id: String,
+        lines: Vec<String>,
+    },
     LaunchExited {
         instance_id: String,
         status: String,
@@ -136,11 +139,28 @@ pub enum Message {
     ModrinthSearchChanged(String),
     ResourceProviderSelected(ResourceProvider),
     ModrinthKindSelected(ModrinthKind),
+    DiscoverLoaderSelected(LoaderKind),
+    DiscoverVersionSelected(String),
     SearchModrinth,
     ModrinthSearchFinished(Result<Vec<ModrinthProject>, AppError>),
     OpenModrinthProject(String),
     ModrinthProjectDetailLoaded(Result<ModrinthProjectDetail, AppError>),
     CloseModrinthProject,
+    OpenInstanceSelectionModal {
+        project_id: String,
+        kind: ModrinthKind,
+        provider: ResourceProvider,
+    },
+    InstallTargetsResolved(Vec<(String, String)>),
+    CloseInstanceSelectionModal,
+    UninstallFromInstance {
+        instance_id: String,
+        mod_id: String,
+    },
+    InstallToInstance {
+        instance_id: String,
+        project_id: String,
+    },
     InstallModrinthProject(String),
     ModrinthProjectInstallProgress {
         status: String,
@@ -188,6 +208,7 @@ pub enum Message {
     DefaultRamChanged(u32),
     GlobalJvmArgsChanged(String),
     DefaultGameDirChanged(String),
+    PickDefaultGameDir,
     DiscordPresenceChanged(bool),
     CrashReporterChanged(bool),
     CurseForgeApiKeyChanged(String),

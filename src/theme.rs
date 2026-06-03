@@ -1,6 +1,9 @@
 use iced::border;
-use iced::widget::{button, container, overlay, progress_bar, text_input};
-use iced::{Background, Border, Color, Shadow, Theme};
+use iced::widget::{
+    button, checkbox as checkbox_widget, container, overlay, progress_bar,
+    scrollable as scrollable_widget, slider as slider_widget, text_input,
+};
+use iced::{Background, Border, Color, Padding, Shadow, Theme};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,7 +90,7 @@ impl SwiftTheme {
                 accent,
                 success: color(0x10, 0xb9, 0x81),
                 danger: color(0xff, 0x78, 0x86),
-                warning: color(0xad, 0xc6, 0xff),
+                warning: color(0xff, 0xb8, 0x6c),
                 text: color(0xe5, 0xe2, 0xe1),
                 muted: color(0xbb, 0xca, 0xbf),
             },
@@ -101,7 +104,7 @@ impl SwiftTheme {
                 accent,
                 success: color(0x10, 0xb9, 0x81),
                 danger: color(0xff, 0x78, 0x86),
-                warning: color(0xad, 0xc6, 0xff),
+                warning: color(0xff, 0xb8, 0x6c),
                 text: color(0xe5, 0xe2, 0xe1),
                 muted: color(0xbb, 0xca, 0xbf),
             },
@@ -149,7 +152,12 @@ pub fn surface(_: &Theme) -> container::Style {
     container::Style {
         text_color: Some(p.text),
         background: Some(Background::Color(p.surface)),
-        border: border::rounded(8).color(Color { a: 0.70, ..p.border }).width(1),
+        border: border::rounded(8)
+            .color(Color {
+                a: 0.70,
+                ..p.border
+            })
+            .width(1),
         shadow: Shadow::default(),
     }
 }
@@ -200,7 +208,10 @@ pub fn card(_: &Theme) -> container::Style {
         text_color: Some(p.text),
         background: Some(Background::Color(p.surface)),
         border: border::rounded(8)
-            .color(Color { a: 0.72, ..p.border })
+            .color(Color {
+                a: 0.72,
+                ..p.border
+            })
             .width(1),
         shadow: Shadow::default(),
     }
@@ -214,6 +225,57 @@ pub fn badge(_: &Theme) -> container::Style {
         border: border::rounded(99)
             .color(Color {
                 a: 0.55,
+                ..p.border
+            })
+            .width(1),
+        shadow: Shadow::default(),
+    }
+}
+
+pub fn danger_badge(_: &Theme) -> container::Style {
+    let p = DARK.palette();
+    container::Style {
+        text_color: Some(color(0xff, 0xff, 0xff)),
+        background: Some(Background::Color(p.danger)),
+        border: border::rounded(99)
+            .color(Color {
+                a: 0.72,
+                ..p.danger
+            })
+            .width(1),
+        shadow: Shadow::default(),
+    }
+}
+
+pub fn active_badge(_: &Theme) -> container::Style {
+    let p = DARK.palette();
+    container::Style {
+        text_color: Some(p.success),
+        background: Some(Background::Color(Color {
+            a: 0.16,
+            ..p.success
+        })),
+        border: border::rounded(99)
+            .color(Color {
+                a: 0.52,
+                ..p.success
+            })
+            .width(1),
+        shadow: Shadow::default(),
+    }
+}
+
+pub fn inactive_badge(_: &Theme) -> container::Style {
+    let p = DARK.palette();
+    container::Style {
+        text_color: Some(p.muted),
+        background: Some(Background::Color(Color {
+            a: 0.18,
+            ..p.surface_high
+        })),
+        border: border::rounded(99)
+            .color(Color {
+                a: 0.40,
                 ..p.border
             })
             .width(1),
@@ -305,11 +367,15 @@ pub fn nav_button(_: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: Some(Background::Color(bg)),
         text_color: p.accent,
-        border: border::rounded(8).color(Color { a: 0.55, ..p.border }).width(1),
+        border: border::rounded(8)
+            .color(Color {
+                a: 0.55,
+                ..p.border
+            })
+            .width(1),
         shadow: Shadow::default(),
     }
 }
-
 
 fn button_style(base: Color, status: button::Status) -> button::Style {
     let bg = match status {
@@ -349,6 +415,115 @@ pub fn progress(_: &Theme) -> progress_bar::Style {
         background: Background::Color(p.surface_high),
         bar: Background::Color(p.accent),
         border: border::rounded(6).color(p.border).width(1),
+    }
+}
+
+pub fn slider(_: &Theme, status: slider_widget::Status) -> slider_widget::Style {
+    let p = DARK.palette();
+    let accent = match status {
+        slider_widget::Status::Active => p.accent,
+        slider_widget::Status::Hovered => p.success,
+        slider_widget::Status::Dragged => p.success,
+    };
+    slider_widget::Style {
+        rail: slider_widget::Rail {
+            backgrounds: (
+                Background::Color(accent),
+                Background::Color(Color {
+                    a: 0.70,
+                    ..p.surface_high
+                }),
+            ),
+            width: 6.0,
+            border: border::rounded(99)
+                .color(Color {
+                    a: 0.55,
+                    ..p.border
+                })
+                .width(1),
+        },
+        handle: slider_widget::Handle {
+            shape: slider_widget::HandleShape::Circle { radius: 9.0 },
+            background: Background::Color(accent),
+            border_width: 2.0,
+            border_color: p.background,
+        },
+    }
+}
+
+pub fn checkbox(_: &Theme, status: checkbox_widget::Status) -> checkbox_widget::Style {
+    let p = DARK.palette();
+    let (checked, hovered, disabled) = match status {
+        checkbox_widget::Status::Active { is_checked } => (is_checked, false, false),
+        checkbox_widget::Status::Hovered { is_checked } => (is_checked, true, false),
+        checkbox_widget::Status::Disabled { is_checked } => (is_checked, false, true),
+    };
+    let bg = if checked {
+        if hovered {
+            p.success
+        } else {
+            p.accent
+        }
+    } else if hovered {
+        p.surface_high
+    } else {
+        p.surface
+    };
+    checkbox_widget::Style {
+        background: Background::Color(if disabled {
+            Color { a: 0.45, ..bg }
+        } else {
+            bg
+        }),
+        icon_color: if checked { p.background } else { p.muted },
+        border: border::rounded(5)
+            .color(if checked { p.accent } else { p.border })
+            .width(1),
+        text_color: Some(if disabled { p.muted } else { p.text }),
+    }
+}
+
+pub fn scrollbar_gutter() -> Padding {
+    Padding {
+        right: 18.0,
+        ..Padding::ZERO
+    }
+}
+
+pub fn scrollable(_: &Theme, status: scrollable_widget::Status) -> scrollable_widget::Style {
+    let p = DARK.palette();
+    let active_scroller = match status {
+        scrollable_widget::Status::Active => p.accent,
+        scrollable_widget::Status::Hovered { .. } | scrollable_widget::Status::Dragged { .. } => {
+            p.success
+        }
+    };
+    let rail = scrollable_widget::Rail {
+        background: Some(Background::Color(Color {
+            a: 0.22,
+            ..p.surface_high
+        })),
+        border: border::rounded(99)
+            .color(Color {
+                a: 0.45,
+                ..p.border
+            })
+            .width(1),
+        scroller: scrollable_widget::Scroller {
+            color: active_scroller,
+            border: border::rounded(99)
+                .color(Color {
+                    a: 0.60,
+                    ..active_scroller
+                })
+                .width(1),
+        },
+    };
+    scrollable_widget::Style {
+        container: container::Style::default(),
+        vertical_rail: rail,
+        horizontal_rail: rail,
+        gap: Some(Background::Color(p.surface_high)),
     }
 }
 

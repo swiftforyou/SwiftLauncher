@@ -14,6 +14,7 @@ use crate::instances::screenshots::latest_screenshot;
 use crate::instances::{Instance, InstanceRunState, InstanceTab, LoaderKind, SortMode};
 use crate::messages::{LauncherPage, Message};
 use crate::storage::settings::LauncherSettings;
+use crate::system::SystemTelemetry;
 use crate::theme;
 
 fn grid_columns(window_width: f32, list_view: bool) -> usize {
@@ -58,6 +59,7 @@ pub fn view<'a>(
     instances: &'a [Instance],
     avatar_cache: &'a HashMap<String, PathBuf>,
     window_width: f32,
+    system_telemetry: &'a SystemTelemetry,
     page: LauncherPage,
     search: &'a str,
     sort: SortMode,
@@ -175,7 +177,12 @@ pub fn view<'a>(
         content = content.push(error_row(error));
     }
     content = match page {
-        LauncherPage::Home => content.push(home_dashboard(active_instance, instances, compact)),
+        LauncherPage::Home => content.push(home_dashboard(
+            active_instance,
+            instances,
+            system_telemetry,
+            compact,
+        )),
         LauncherPage::Instances => {
             content.push(instances_page(sort, list_view, loader_filter, grid))
         }
@@ -344,15 +351,20 @@ fn sidebar<'a>(
             .center_x(Length::Fill)
             .into()
     } else {
-        column![
-            text("Swift Launcher")
-                .size(22)
-                .color(theme::DARK.palette().accent),
-            text(format!("v{}", env!("CARGO_PKG_VERSION")))
-                .size(12)
-                .color(theme::DARK.palette().muted),
+        row![
+            svg_icon(icons::LOGO, 38.0),
+            column![
+                text("Swift Launcher")
+                    .size(22)
+                    .color(theme::DARK.palette().accent),
+                text(format!("v{}", env!("CARGO_PKG_VERSION")))
+                    .size(12)
+                    .color(theme::DARK.palette().muted),
+            ]
+            .spacing(5),
         ]
-        .spacing(6)
+        .spacing(10)
+        .align_y(Alignment::Center)
         .into()
     };
 
@@ -502,6 +514,7 @@ fn topbar<'a>(
 fn home_dashboard<'a>(
     active: Option<&'a Instance>,
     instances: &'a [Instance],
+    system_telemetry: &'a SystemTelemetry,
     compact: bool,
 ) -> Element<'a, Message> {
     let hero = match active {
@@ -521,7 +534,7 @@ fn home_dashboard<'a>(
             ]
             .spacing(12),
             row![
-                container(system_panel(instances.len()))
+                container(system_panel(instances.len(), system_telemetry))
                     .height(Length::Fixed(190.0))
                     .width(Length::FillPortion(1)),
                 container(up_next_panel(instances))
@@ -539,7 +552,7 @@ fn home_dashboard<'a>(
     } else {
         let upper = row![hero, recent].spacing(18).height(Length::Fixed(292.0));
         let middle = row![
-            system_panel(instances.len()),
+            system_panel(instances.len(), system_telemetry),
             up_next_panel(instances),
             weekly_picks_panel(),
         ]
@@ -693,7 +706,7 @@ fn discover_page<'a>(
     } else {
         scrollable(
             container(result_list)
-                .padding(theme::scrollbar_gutter())
+                .padding(discover_scroll_padding())
                 .width(Length::Fill),
         )
         .height(Length::Fill)
@@ -715,6 +728,15 @@ fn discover_page<'a>(
         .height(Length::Fill)
         .width(Length::Fill)
         .into()
+}
+
+fn discover_scroll_padding() -> iced::Padding {
+    iced::Padding {
+        top: 12.0,
+        right: theme::scrollbar_gutter().right,
+        bottom: 12.0,
+        left: 2.0,
+    }
 }
 
 fn resource_detail_page<'a>(
@@ -974,8 +996,8 @@ fn project_icon(icon: Option<&Vec<u8>>, size: f32) -> Element<'_, Message> {
         None => container(svg_icon(icons::MODS, size * 0.55))
             .width(Length::Fixed(size))
             .height(Length::Fixed(size))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
+            .center_x(Length::Fixed(size))
+            .center_y(Length::Fixed(size))
             .style(theme::surface)
             .into(),
     }
@@ -1009,6 +1031,32 @@ fn format_downloads(downloads: u64) -> String {
     }
 }
 
+fn relative_last_played(timestamp: Option<u64>) -> String {
+    let Some(timestamp) = timestamp else {
+        return "never".into();
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(timestamp);
+    let elapsed = now.saturating_sub(timestamp);
+    if elapsed < 60 {
+        "just now".into()
+    } else if elapsed < 120 {
+        "a minute ago".into()
+    } else if elapsed < 3_600 {
+        format!("{} minutes ago", elapsed / 60)
+    } else if elapsed < 7_200 {
+        "an hour ago".into()
+    } else if elapsed < 86_400 {
+        format!("{} hours ago", elapsed / 3_600)
+    } else if elapsed < 172_800 {
+        "a day ago".into()
+    } else {
+        format!("{} days ago", elapsed / 86_400)
+    }
+}
+
 fn active_instance_hero(instance: &Instance) -> Element<'_, Message> {
     container(
         column![
@@ -1024,10 +1072,7 @@ fn active_instance_hero(instance: &Instance) -> Element<'_, Message> {
                 "{} instance, {} RAM allocated. Last played {}.",
                 loader_label(instance.loader),
                 format_ram(instance.ram_mb),
-                instance
-                    .last_played_unix
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "never".into())
+                relative_last_played(instance.last_played_unix)
             ))
             .size(13)
             .color(theme::DARK.palette().muted),
@@ -1117,7 +1162,28 @@ fn empty_hero<'a>() -> Element<'a, Message> {
     .into()
 }
 
-fn system_panel(instance_count: usize) -> Element<'static, Message> {
+fn system_panel(instance_count: usize, telemetry: &SystemTelemetry) -> Element<'static, Message> {
+    let (memory_label, memory_progress) = usage_label_and_progress(
+        telemetry.memory_used_bytes,
+        telemetry.memory_total_bytes,
+        "Collecting...",
+    );
+    let (disk_label, disk_progress) = usage_label_and_progress(
+        telemetry.disk_used_bytes,
+        telemetry.disk_total_bytes,
+        "Collecting...",
+    );
+    let cpu_label = telemetry
+        .cpu_usage_percent
+        .map(|value| format!("{value:.0}%"))
+        .unwrap_or_else(|| "Collecting...".into());
+    let cpu_progress = telemetry
+        .cpu_usage_percent
+        .map(|value| value / 100.0)
+        .unwrap_or_default();
+    let online = telemetry.memory_total_bytes.is_some()
+        || telemetry.disk_total_bytes.is_some()
+        || telemetry.cpu_usage_percent.is_some();
     container(
         column![
             text("System Status")
@@ -1127,12 +1193,23 @@ fn system_panel(instance_count: usize) -> Element<'static, Message> {
                 .size(12)
                 .color(theme::DARK.palette().muted),
             metric_bar(
-                "RAM Allocation",
-                "4 GB / 16 GB",
-                0.25,
+                "RAM Usage",
+                memory_label,
+                memory_progress,
                 theme::DARK.palette().warning
             ),
-            metric_bar("Disk Storage", "64%", 0.64, theme::DARK.palette().accent),
+            metric_bar(
+                "CPU Usage",
+                cpu_label,
+                cpu_progress,
+                theme::DARK.palette().accent
+            ),
+            metric_bar(
+                "Disk Storage",
+                disk_label,
+                disk_progress,
+                theme::DARK.palette().accent
+            ),
             Space::with_height(Length::Fill),
             row![
                 text("Instances")
@@ -1142,9 +1219,17 @@ fn system_panel(instance_count: usize) -> Element<'static, Message> {
                 text(instance_count.to_string()).size(14),
             ],
             row![
-                text("Systems").size(12).color(theme::DARK.palette().muted),
+                text("Telemetry")
+                    .size(12)
+                    .color(theme::DARK.palette().muted),
                 Space::with_width(Length::Fill),
-                text("Online").size(14).color(theme::DARK.palette().success),
+                text(if online { "Online" } else { "Unavailable" })
+                    .size(14)
+                    .color(if online {
+                        theme::DARK.palette().success
+                    } else {
+                        theme::DARK.palette().muted
+                    }),
             ],
         ]
         .spacing(12),
@@ -1154,6 +1239,32 @@ fn system_panel(instance_count: usize) -> Element<'static, Message> {
     .height(Length::Fill)
     .style(theme::card)
     .into()
+}
+
+fn usage_label_and_progress(
+    used: Option<u64>,
+    total: Option<u64>,
+    fallback: &'static str,
+) -> (String, f32) {
+    match (used, total) {
+        (Some(used), Some(total)) if total > 0 => (
+            format!("{} / {}", format_bytes(used), format_bytes(total)),
+            (used as f32 / total as f32).clamp(0.0, 1.0),
+        ),
+        _ => (fallback.into(), 0.0),
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.1} GB", bytes as f64 / GIB)
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.0} MB", bytes as f64 / MIB)
+    } else {
+        format!("{} KB", bytes / 1024)
+    }
 }
 
 fn recent_instances_panel<'a>(instances: &'a [Instance], compact: bool) -> Element<'a, Message> {
@@ -1289,6 +1400,12 @@ fn recent_activity_panel<'a>(instances: &'a [Instance]) -> Element<'a, Message> 
                         .color(theme::DARK.palette().accent),
                     text(&instance.name).size(14),
                     text(format!(
+                        "Last played {}",
+                        relative_last_played(instance.last_played_unix)
+                    ))
+                    .size(12)
+                    .color(theme::DARK.palette().muted),
+                    text(format!(
                         "{} min session",
                         (instance.playtime_seconds / 60).max(1)
                     ))
@@ -1327,7 +1444,7 @@ fn recent_instances(instances: &[Instance]) -> Vec<&Instance> {
 
 fn metric_bar(
     label: &'static str,
-    value: &'static str,
+    value: String,
     progress: f32,
     color: iced::Color,
 ) -> Element<'static, Message> {
@@ -1746,6 +1863,12 @@ fn card(instance: &Instance, list_view: bool, _columns: usize) -> Element<'_, Me
                     theme::secondary_button,
                 ),
                 icon_button(
+                    icons::WORLD,
+                    18.0,
+                    Message::OpenInstanceTab(instance.id.clone(), InstanceTab::Worlds),
+                    theme::secondary_button,
+                ),
+                icon_button(
                     icons::SETTINGS,
                     18.0,
                     Message::OpenInstanceTab(instance.id.clone(), InstanceTab::Settings),
@@ -1791,6 +1914,12 @@ fn card(instance: &Instance, list_view: bool, _columns: usize) -> Element<'_, Me
                         icons::MODS,
                         18.0,
                         Message::OpenInstanceTab(instance.id.clone(), InstanceTab::Mods),
+                        theme::secondary_button,
+                    ),
+                    icon_button(
+                        icons::WORLD,
+                        18.0,
+                        Message::OpenInstanceTab(instance.id.clone(), InstanceTab::Worlds),
                         theme::secondary_button,
                     ),
                     icon_button(

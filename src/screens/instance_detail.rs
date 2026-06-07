@@ -8,8 +8,9 @@ use crate::icons::{self, icon_button, icon_label_button, svg_icon};
 use crate::instances::mods::{
     InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail, ResourceProvider,
 };
+use crate::instances::worlds::{ServerEntry, WorldEntry, WorldGameMode};
 use crate::instances::{Instance, InstanceRunState, InstanceTab};
-use crate::messages::Message;
+use crate::messages::{Message, WorldsPanelTab};
 use crate::theme;
 
 #[allow(clippy::too_many_arguments)]
@@ -32,6 +33,10 @@ pub fn view<'a>(
     mod_categories: &'a [String],
     new_mod_category: &'a str,
     mods_loading: bool,
+    worlds_tab: WorldsPanelTab,
+    worlds_loading: bool,
+    worlds: &'a [WorldEntry],
+    servers: &'a [ServerEntry],
     modrinth_install_status: &'a str,
     modrinth_install_progress: f32,
     launch_log: &'a [String],
@@ -76,6 +81,7 @@ pub fn view<'a>(
     let tabs = row![
         tab_button("Overview", InstanceTab::Overview, tab),
         tab_button("Mods", InstanceTab::Mods, tab),
+        tab_button("Explore", InstanceTab::Worlds, tab),
         tab_button("Files", InstanceTab::Files, tab),
         tab_button("Settings", InstanceTab::Settings, tab),
         tab_button("Logs", InstanceTab::Logs, tab),
@@ -103,6 +109,7 @@ pub fn view<'a>(
             modrinth_install_progress,
         ),
         InstanceTab::Files => files(instance, export_path, export_busy),
+        InstanceTab::Worlds => worlds_panel(instance, worlds_tab, worlds_loading, worlds, servers),
         InstanceTab::Settings => settings(instance),
         InstanceTab::Logs => logs(launch_log, launch_status, launch_progress),
     };
@@ -599,6 +606,250 @@ fn mod_row<'a>(item: &'a InstalledMod, categories: &'a [String]) -> Element<'a, 
     .padding(10)
     .style(theme::card)
     .into()
+}
+
+fn worlds_panel<'a>(
+    instance: &'a Instance,
+    tab: WorldsPanelTab,
+    loading: bool,
+    worlds: &'a [WorldEntry],
+    servers: &'a [ServerEntry],
+) -> Element<'a, Message> {
+    let tabs = row![
+        worlds_tab_button("Worlds", WorldsPanelTab::Worlds, tab),
+        worlds_tab_button("Servers", WorldsPanelTab::Servers, tab),
+        Space::with_width(Length::Fill),
+        icon_button(
+            icons::FOLDER,
+            16.0,
+            match tab {
+                WorldsPanelTab::Worlds => Message::OpenWorldsFolder(instance.id.clone()),
+                WorldsPanelTab::Servers => Message::OpenServersFile(instance.id.clone()),
+            },
+            theme::secondary_button,
+        ),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    let mut list = column![tabs].spacing(10);
+    if loading {
+        list = list.push(text("Loading worlds and servers...").size(13));
+    } else {
+        match tab {
+            WorldsPanelTab::Worlds => {
+                if worlds.is_empty() {
+                    list = list.push(empty_worlds_state(
+                        "No worlds found",
+                        "Create a world in Minecraft first.",
+                    ));
+                } else {
+                    for world in worlds {
+                        list = list.push(world_card(instance, world));
+                    }
+                }
+            }
+            WorldsPanelTab::Servers => {
+                if servers.is_empty() {
+                    list = list.push(empty_worlds_state(
+                        "No saved servers",
+                        "Add servers in Minecraft to see them here.",
+                    ));
+                } else {
+                    for server in servers {
+                        list = list.push(server_card(instance, server));
+                    }
+                }
+            }
+        }
+    }
+
+    scrollable(container(list).padding(theme::scrollbar_gutter()))
+        .style(theme::scrollable)
+        .height(Length::Fill)
+        .into()
+}
+
+fn worlds_tab_button(
+    label: &'static str,
+    target: WorldsPanelTab,
+    selected: WorldsPanelTab,
+) -> iced::widget::Button<'static, Message> {
+    button(text(label).size(13))
+        .on_press(Message::SelectWorldsPanelTab(target))
+        .style(if target == selected {
+            theme::primary_button
+        } else {
+            theme::secondary_button
+        })
+        .padding([7, 12])
+}
+
+fn empty_worlds_state<'a>(title: &'static str, detail: &'static str) -> Element<'a, Message> {
+    container(
+        column![
+            text(title).size(16),
+            text(detail).size(12).color(theme::DARK.palette().muted),
+        ]
+        .spacing(6),
+    )
+    .padding(14)
+    .style(theme::card)
+    .width(Length::Fill)
+    .into()
+}
+
+fn world_card<'a>(instance: &'a Instance, world: &'a WorldEntry) -> Element<'a, Message> {
+    let subtitle = if world.folder_name == world.display_name {
+        "Local world save".to_string()
+    } else {
+        format!("Folder: {}", world.folder_name)
+    };
+    entity_card(
+        world_icon(world.icon.as_ref(), icons::WORLD),
+        world.display_name.clone(),
+        subtitle,
+        Some(world_badges(world)),
+        Message::PlayWorld {
+            instance_id: instance.id.clone(),
+            world_folder: world.folder_name.clone(),
+        },
+    )
+}
+
+fn server_card<'a>(instance: &'a Instance, server: &'a ServerEntry) -> Element<'a, Message> {
+    entity_card(
+        world_icon(server.icon.as_ref(), icons::WORLD),
+        server.name.clone(),
+        server.address.clone(),
+        Some(
+            row![
+                pill("Server", theme::creative_badge),
+                pill("Saved", theme::badge)
+            ]
+            .spacing(6)
+            .into(),
+        ),
+        Message::PlayServer {
+            instance_id: instance.id.clone(),
+            address: server.address.clone(),
+        },
+    )
+}
+
+fn entity_card<'a>(
+    icon: Element<'a, Message>,
+    title: String,
+    subtitle: String,
+    badges: Option<Element<'a, Message>>,
+    play_message: Message,
+) -> Element<'a, Message> {
+    let mut body = column![
+        text(title).size(15),
+        text(subtitle).size(12).color(theme::DARK.palette().muted),
+    ]
+    .spacing(5)
+    .width(Length::Fill);
+    if let Some(badges) = badges {
+        body = body.push(badges);
+    }
+
+    container(
+        row![
+            icon,
+            body,
+            icon_button(icons::PLAY, 16.0, play_message, theme::success_button),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
+    )
+    .padding(10)
+    .style(theme::card)
+    .width(Length::Fill)
+    .into()
+}
+
+fn world_badges<'a>(world: &'a WorldEntry) -> Element<'a, Message> {
+    let mode = if world.hardcore {
+        pill("Hardcore", theme::hardcore_badge)
+    } else {
+        match world.game_mode.unwrap_or(WorldGameMode::Survival) {
+            WorldGameMode::Survival => pill("Survival", theme::survival_badge),
+            WorldGameMode::Creative => pill("Creative", theme::creative_badge),
+            WorldGameMode::Adventure => pill("Adventure", theme::adventure_badge),
+            WorldGameMode::Spectator => pill("Spectator", theme::spectator_badge),
+            WorldGameMode::Unknown(value) => pill(format!("Mode {value}"), theme::badge),
+        }
+    };
+    let cheats = match world.cheats {
+        Some(true) => pill("Cheats On", theme::cheats_badge),
+        Some(false) => pill("No Cheats", theme::badge),
+        None => pill("Cheats Unknown", theme::inactive_badge),
+    };
+    let difficulty = pill(
+        world.difficulty.as_deref().unwrap_or("Difficulty Unknown"),
+        theme::badge,
+    );
+    let played = pill(
+        world_last_played(world.last_played_unix),
+        theme::inactive_badge,
+    );
+
+    row![mode, cheats, difficulty, played]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .into()
+}
+
+fn pill<'a>(
+    label: impl Into<String>,
+    style: fn(&IcedTheme) -> iced::widget::container::Style,
+) -> Element<'a, Message> {
+    container(text(label.into()).size(11))
+        .padding([3, 8])
+        .style(style)
+        .into()
+}
+
+fn world_last_played(timestamp: Option<u64>) -> String {
+    let Some(timestamp) = timestamp else {
+        return "Never Played".into();
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(timestamp);
+    let elapsed = now.saturating_sub(timestamp);
+    if elapsed < 60 {
+        "Just now".into()
+    } else if elapsed < 120 {
+        "Played 1m ago".into()
+    } else if elapsed < 3_600 {
+        format!("Played {}m ago", elapsed / 60)
+    } else if elapsed < 7_200 {
+        "Played 1h ago".into()
+    } else if elapsed < 86_400 {
+        format!("Played {}h ago", elapsed / 3_600)
+    } else {
+        format!("Played {}d ago", elapsed / 86_400)
+    }
+}
+
+fn world_icon<'a>(icon: Option<&Vec<u8>>, fallback: &'static [u8]) -> Element<'a, Message> {
+    match icon {
+        Some(bytes) => image(image::Handle::from_bytes(bytes.clone()))
+            .width(Length::Fixed(42.0))
+            .height(Length::Fixed(42.0))
+            .content_fit(iced::ContentFit::Cover)
+            .into(),
+        None => container(svg_icon(fallback, 22.0))
+            .width(Length::Fixed(42.0))
+            .height(Length::Fixed(42.0))
+            .center_x(Length::Fixed(42.0))
+            .center_y(Length::Fixed(42.0))
+            .style(theme::surface)
+            .into(),
+    }
 }
 
 fn files<'a>(

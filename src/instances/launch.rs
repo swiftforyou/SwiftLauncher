@@ -811,6 +811,20 @@ fn append_instance_game_options(instance: &Instance, game_args: &mut Vec<String>
         game_args.push("--fullscreen".into());
     }
 
+    let world = instance.quick_play_world.trim();
+    if !world.is_empty() {
+        game_args.push("--quickPlaySingleplayer".into());
+        game_args.push(world.into());
+        return;
+    }
+
+    let quick_server = instance.quick_play_server.trim();
+    if !quick_server.is_empty() {
+        game_args.push("--quickPlayMultiplayer".into());
+        game_args.push(quick_server.into());
+        return;
+    }
+
     let server = instance.server.trim();
     if server.is_empty() {
         return;

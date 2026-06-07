@@ -24,6 +24,7 @@ pub const MODS: &[u8] = include_bytes!("../assets/icons/mods.svg");
 pub const PLAY: &[u8] = include_bytes!("../assets/icons/play.svg");
 pub const SETTINGS: &[u8] = include_bytes!("../assets/icons/settings.svg");
 pub const STOP: &[u8] = include_bytes!("../assets/icons/stop.svg");
+pub const WORLD: &[u8] = include_bytes!("../assets/icons/world.svg");
 pub static AUTH_MICROSOFT: LazyLock<image::Handle> = LazyLock::new(|| {
     image::Handle::from_bytes(include_bytes!("../assets/auth/microsoft.png").to_vec())
 });

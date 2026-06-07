@@ -6,6 +6,7 @@ pub mod launch;
 pub mod launch_monitor;
 pub mod mods;
 pub mod screenshots;
+pub mod worlds;
 
 use std::path::PathBuf;
 
@@ -66,6 +67,7 @@ impl std::fmt::Display for SortMode {
 pub enum InstanceTab {
     Overview,
     Mods,
+    Worlds,
     Files,
     Settings,
     Logs,
@@ -76,6 +78,7 @@ impl std::fmt::Display for InstanceTab {
         match self {
             Self::Overview => f.write_str("Overview"),
             Self::Mods => f.write_str("Mods"),
+            Self::Worlds => f.write_str("Explore"),
             Self::Files => f.write_str("Files"),
             Self::Settings => f.write_str("Settings"),
             Self::Logs => f.write_str("Logs"),
@@ -110,6 +113,10 @@ pub struct Instance {
     pub fullscreen: bool,
     pub game_dir_override: String,
     pub server: String,
+    #[serde(default, skip_serializing)]
+    pub quick_play_world: String,
+    #[serde(default, skip_serializing)]
+    pub quick_play_server: String,
     pub run_state: InstanceRunState,
 }
 

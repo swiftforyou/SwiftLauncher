@@ -17,7 +17,7 @@ use crate::instances::mods::{
 use crate::instances::{
     Instance, InstanceManager, InstanceRunState, InstanceTab, LoaderKind, SortMode,
 };
-use crate::messages::{LauncherPage, Message};
+use crate::messages::{LauncherPage, Message, WorldsPanelTab};
 use crate::state::{AppState, StartupData};
 use crate::storage::{accounts, settings, SledStore};
 use crate::theme::SwiftTheme;
@@ -84,6 +84,11 @@ pub struct SwiftLauncher {
     mod_categories: Vec<String>,
     new_mod_category: String,
     mods_loading: bool,
+    worlds_tab: WorldsPanelTab,
+    worlds_loading: bool,
+    servers_loading: bool,
+    worlds: Vec<crate::instances::worlds::WorldEntry>,
+    servers: Vec<crate::instances::worlds::ServerEntry>,
     modrinth_install_run_id: u64,
     active_modrinth_install: Option<ActiveModrinthInstall>,
     modrinth_install_status: String,
@@ -96,6 +101,8 @@ pub struct SwiftLauncher {
     settings_open: bool,
     delete_confirm_id: Option<String>,
     window_width: f32,
+    system_telemetry: crate::system::SystemTelemetry,
+    previous_cpu_sample: Option<crate::system::CpuSample>,
     avatar_cache: HashMap<String, PathBuf>,
     launch_status_by_instance: HashMap<String, String>,
     launch_progress_by_instance: HashMap<String, f32>,
@@ -197,6 +204,11 @@ impl SwiftLauncher {
             mod_categories: crate::instances::mods::default_mod_categories(),
             new_mod_category: String::new(),
             mods_loading: false,
+            worlds_tab: WorldsPanelTab::Worlds,
+            worlds_loading: false,
+            servers_loading: false,
+            worlds: Vec::new(),
+            servers: Vec::new(),
             modrinth_install_run_id: 0,
             active_modrinth_install: None,
             modrinth_install_status: String::new(),
@@ -209,6 +221,8 @@ impl SwiftLauncher {
             settings_open: false,
             delete_confirm_id: None,
             window_width: 1160.0,
+            system_telemetry: crate::system::SystemTelemetry::default(),
+            previous_cpu_sample: None,
             avatar_cache: HashMap::new(),
             launch_status_by_instance: HashMap::new(),
             launch_progress_by_instance: HashMap::new(),
@@ -281,11 +295,19 @@ impl SwiftLauncher {
                         crate::instances::create::fetch_available_versions(),
                         Message::VersionsLoaded,
                     );
+                    let telemetry_task = Task::perform(
+                        crate::system::read_system_telemetry(
+                            self.settings.default_game_dir.clone(),
+                            self.previous_cpu_sample,
+                        ),
+                        Message::SystemTelemetryRefreshed,
+                    );
                     if avatar_tasks.is_empty() {
-                        version_task
+                        Task::batch([version_task, telemetry_task])
                     } else {
                         let mut tasks = avatar_tasks;
                         tasks.push(version_task);
+                        tasks.push(telemetry_task);
                         Task::batch(tasks)
                     }
                 }
@@ -322,6 +344,21 @@ impl SwiftLauncher {
             }
             Message::WindowResized(width) => {
                 self.window_width = width.max(420.0);
+                Task::none()
+            }
+            Message::RefreshSystemTelemetry => {
+                let disk_path = self.settings.default_game_dir.clone();
+                let previous_cpu = self.previous_cpu_sample;
+                Task::perform(
+                    crate::system::read_system_telemetry(disk_path, previous_cpu),
+                    Message::SystemTelemetryRefreshed,
+                )
+            }
+            Message::SystemTelemetryRefreshed((telemetry, cpu_sample)) => {
+                self.system_telemetry = telemetry;
+                if cpu_sample.is_some() {
+                    self.previous_cpu_sample = cpu_sample;
+                }
                 Task::none()
             }
             Message::LauncherPageSelected(page) => {
@@ -601,10 +638,10 @@ impl SwiftLauncher {
                 self.selected_instance = Some(id);
                 self.selected_tab = tab;
                 self.last_auto_scrolled_log_len = 0;
-                if tab == InstanceTab::Mods {
-                    self.load_selected_mods()
-                } else {
-                    Task::none()
+                match tab {
+                    InstanceTab::Mods => self.load_selected_mods(),
+                    InstanceTab::Worlds => self.load_selected_worlds(),
+                    _ => Task::none(),
                 }
             }
             Message::CloseInstanceDetail => {
@@ -614,12 +651,62 @@ impl SwiftLauncher {
             Message::SelectInstanceTab(tab) => {
                 self.selected_tab = tab;
                 self.last_auto_scrolled_log_len = 0;
-                if tab == InstanceTab::Mods {
-                    self.load_selected_mods()
-                } else {
-                    Task::none()
+                match tab {
+                    InstanceTab::Mods => self.load_selected_mods(),
+                    InstanceTab::Worlds => self.load_selected_worlds(),
+                    _ => Task::none(),
                 }
             }
+            Message::SelectWorldsPanelTab(tab) => {
+                self.worlds_tab = tab;
+                Task::none()
+            }
+            Message::WorldsLoaded(result) => {
+                self.worlds_loading = false;
+                match result {
+                    Ok(worlds) => self.worlds = worlds,
+                    Err(error) => self.error_banner = Some(error.to_string()),
+                }
+                Task::none()
+            }
+            Message::ServersLoaded(result) => {
+                self.servers_loading = false;
+                match result {
+                    Ok(servers) => self.servers = servers,
+                    Err(error) => self.error_banner = Some(error.to_string()),
+                }
+                Task::none()
+            }
+            Message::OpenWorldsFolder(id) => {
+                let Some(instance) = self.instances.iter().find(|instance| instance.id == id)
+                else {
+                    self.error_banner = Some("instance missing".into());
+                    return Task::none();
+                };
+                Task::perform(
+                    crate::system::open_path(crate::instances::worlds::worlds_dir(instance)),
+                    Message::PathOpened,
+                )
+            }
+            Message::OpenServersFile(id) => {
+                let Some(instance) = self.instances.iter().find(|instance| instance.id == id)
+                else {
+                    self.error_banner = Some("instance missing".into());
+                    return Task::none();
+                };
+                Task::perform(
+                    crate::system::open_path(crate::instances::worlds::servers_file(instance)),
+                    Message::PathOpened,
+                )
+            }
+            Message::PlayWorld {
+                instance_id,
+                world_folder,
+            } => self.start_instance_launch(instance_id, Some(world_folder), None),
+            Message::PlayServer {
+                instance_id,
+                address,
+            } => self.start_instance_launch(instance_id, None, Some(address)),
             Message::InstanceNameChanged(value) => {
                 self.with_selected_instance(|instance| instance.name = value);
                 self.persist_selected();
@@ -669,45 +756,7 @@ impl SwiftLauncher {
                 self.persist_selected();
                 Task::none()
             }
-            Message::PlayInstance(id) => {
-                let instance = self
-                    .instances
-                    .iter()
-                    .find(|instance| instance.id == id)
-                    .cloned();
-                let session = self.active_session.clone();
-                if let Some(target) = self.instances.iter_mut().find(|instance| instance.id == id) {
-                    target.run_state = InstanceRunState::Preparing;
-                }
-                self.launch_progress_by_instance.insert(id.clone(), 0.0);
-                match (instance, session) {
-                    (Some(instance), Some(session)) => {
-                        let (stop_tx, _) = tokio::sync::watch::channel(false);
-                        self.launch_run_id = self.launch_run_id.wrapping_add(1);
-                        self.launch_logs_by_instance
-                            .insert(instance.id.clone(), Vec::new());
-                        self.push_instance_launch_log(
-                            &instance.id,
-                            format!("preparing launch: {}", instance.name),
-                        );
-                        self.active_launches.push(ActiveLaunch {
-                            run_id: self.launch_run_id,
-                            instance,
-                            session,
-                            stop_tx,
-                        });
-                        Task::none()
-                    }
-                    (None, _) => {
-                        self.error_banner = Some("instance missing".into());
-                        Task::none()
-                    }
-                    (_, None) => {
-                        self.error_banner = Some("login required before launch".into());
-                        Task::none()
-                    }
-                }
-            }
+            Message::PlayInstance(id) => self.start_instance_launch(id, None, None),
             Message::StopInstance(id) => {
                 for launch in self
                     .active_launches
@@ -1812,6 +1861,7 @@ impl SwiftLauncher {
                 &self.instances,
                 &self.avatar_cache,
                 self.window_width,
+                &self.system_telemetry,
                 self.launcher_page,
                 &self.search,
                 self.sort,
@@ -1900,6 +1950,10 @@ impl SwiftLauncher {
                     &self.mod_categories,
                     &self.new_mod_category,
                     self.mods_loading,
+                    self.worlds_tab,
+                    self.worlds_loading || self.servers_loading,
+                    &self.worlds,
+                    &self.servers,
                     &self.modrinth_install_status,
                     self.modrinth_install_progress,
                     launch_log,
@@ -1929,6 +1983,7 @@ impl SwiftLauncher {
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             time::every(Duration::from_millis(16)).map(Message::Tick),
+            time::every(Duration::from_secs(2)).map(|_| Message::RefreshSystemTelemetry),
             iced::window::resize_events().map(|(_id, size)| Message::WindowResized(size.width)),
         ];
 
@@ -2082,6 +2137,79 @@ impl SwiftLauncher {
             async move { crate::instances::mods::list_mods(&path).await },
             Message::ModsLoaded,
         )
+    }
+
+    fn load_selected_worlds(&mut self) -> Task<Message> {
+        let Some(instance) = self.selected_instance().cloned() else {
+            return Task::none();
+        };
+        self.worlds_loading = true;
+        self.servers_loading = true;
+        Task::batch([
+            Task::perform(
+                crate::instances::worlds::list_worlds(instance.clone()),
+                Message::WorldsLoaded,
+            ),
+            Task::perform(
+                crate::instances::worlds::list_servers(instance),
+                Message::ServersLoaded,
+            ),
+        ])
+    }
+
+    fn start_instance_launch(
+        &mut self,
+        id: String,
+        world_folder: Option<String>,
+        server_address: Option<String>,
+    ) -> Task<Message> {
+        let mut instance = self
+            .instances
+            .iter()
+            .find(|instance| instance.id == id)
+            .cloned();
+        let session = self.active_session.clone();
+        if let Some(instance) = &mut instance {
+            if let Some(world_folder) = world_folder {
+                instance.quick_play_world = world_folder;
+                instance.quick_play_server.clear();
+            }
+            if let Some(server_address) = server_address {
+                instance.quick_play_server = server_address;
+                instance.quick_play_world.clear();
+            }
+        }
+        if let Some(target) = self.instances.iter_mut().find(|instance| instance.id == id) {
+            target.run_state = InstanceRunState::Preparing;
+        }
+        self.launch_progress_by_instance.insert(id.clone(), 0.0);
+        match (instance, session) {
+            (Some(instance), Some(session)) => {
+                let (stop_tx, _) = tokio::sync::watch::channel(false);
+                self.launch_run_id = self.launch_run_id.wrapping_add(1);
+                self.launch_logs_by_instance
+                    .insert(instance.id.clone(), Vec::new());
+                self.push_instance_launch_log(
+                    &instance.id,
+                    format!("preparing launch: {}", instance.name),
+                );
+                self.active_launches.push(ActiveLaunch {
+                    run_id: self.launch_run_id,
+                    instance,
+                    session,
+                    stop_tx,
+                });
+                Task::none()
+            }
+            (None, _) => {
+                self.error_banner = Some("instance missing".into());
+                Task::none()
+            }
+            (_, None) => {
+                self.error_banner = Some("login required before launch".into());
+                Task::none()
+            }
+        }
     }
 
     fn filter_instances_by_compatibility(

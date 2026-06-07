@@ -72,7 +72,7 @@ impl SwiftTheme {
     pub fn palette(self) -> Palette {
         let accent = match self.accent {
             Accent::Indigo => color(0xad, 0xc6, 0xff),
-            Accent::Green => color(0x4e, 0xde, 0xa3),
+            Accent::Green => color(0x9b, 0xed, 0x04),
             Accent::Orange => color(0xff, 0xc1, 0x7a),
             Accent::Pink => color(0xff, 0xb2, 0xb7),
             Accent::Cyan => color(0x72, 0xdc, 0xff),
@@ -88,7 +88,7 @@ impl SwiftTheme {
                 surface_high: color(0x2a, 0x2a, 0x2a),
                 border: color(0x3c, 0x4a, 0x42),
                 accent,
-                success: color(0x10, 0xb9, 0x81),
+                success: color(0x9b, 0xed, 0x04),
                 danger: color(0xff, 0x78, 0x86),
                 warning: color(0xff, 0xb8, 0x6c),
                 text: color(0xe5, 0xe2, 0xe1),
@@ -102,7 +102,7 @@ impl SwiftTheme {
                 surface_high: color(0x2a, 0x2a, 0x2a),
                 border: color(0x3c, 0x4a, 0x42),
                 accent,
-                success: color(0x10, 0xb9, 0x81),
+                success: color(0x9b, 0xed, 0x04),
                 danger: color(0xff, 0x78, 0x86),
                 warning: color(0xff, 0xb8, 0x6c),
                 text: color(0xe5, 0xe2, 0xe1),
@@ -265,6 +265,18 @@ pub fn active_badge(_: &Theme) -> container::Style {
     }
 }
 
+pub fn auth_active_badge(_: &Theme) -> container::Style {
+    let p = DARK.palette();
+    container::Style {
+        text_color: Some(p.text),
+        background: Some(Background::Color(Color { a: 0.70, ..p.crust })),
+        border: border::rounded(99)
+            .color(Color { a: 0.86, ..p.text })
+            .width(1),
+        shadow: Shadow::default(),
+    }
+}
+
 pub fn inactive_badge(_: &Theme) -> container::Style {
     let p = DARK.palette();
     container::Style {
@@ -279,6 +291,39 @@ pub fn inactive_badge(_: &Theme) -> container::Style {
                 ..p.border
             })
             .width(1),
+        shadow: Shadow::default(),
+    }
+}
+
+pub fn survival_badge(_: &Theme) -> container::Style {
+    colored_badge(color(0xa6, 0xe3, 0x7a))
+}
+
+pub fn creative_badge(_: &Theme) -> container::Style {
+    colored_badge(color(0x89, 0xd6, 0xff))
+}
+
+pub fn hardcore_badge(_: &Theme) -> container::Style {
+    colored_badge(color(0xff, 0x78, 0x86))
+}
+
+pub fn adventure_badge(_: &Theme) -> container::Style {
+    colored_badge(color(0xff, 0xc1, 0x7a))
+}
+
+pub fn spectator_badge(_: &Theme) -> container::Style {
+    colored_badge(color(0xd7, 0xbd, 0xff))
+}
+
+pub fn cheats_badge(_: &Theme) -> container::Style {
+    colored_badge(DARK.palette().warning)
+}
+
+fn colored_badge(fg: Color) -> container::Style {
+    container::Style {
+        text_color: Some(fg),
+        background: Some(Background::Color(Color { a: 0.13, ..fg })),
+        border: border::rounded(99).color(Color { a: 0.70, ..fg }).width(1),
         shadow: Shadow::default(),
     }
 }

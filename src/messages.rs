@@ -7,8 +7,10 @@ use crate::error::AppError;
 use crate::instances::mods::{
     InstalledMod, ModrinthKind, ModrinthProject, ModrinthProjectDetail, ResourceProvider,
 };
+use crate::instances::worlds::{ServerEntry, WorldEntry};
 use crate::instances::{Instance, InstanceTab, LoaderKind, SortMode};
 use crate::state::StartupData;
+use crate::system::{CpuSample, SystemTelemetry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LauncherPage {
@@ -19,11 +21,19 @@ pub enum LauncherPage {
     Settings,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorldsPanelTab {
+    Worlds,
+    Servers,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     StartupFinished(Result<StartupData, AppError>),
     Tick(Instant),
     WindowResized(f32),
+    RefreshSystemTelemetry,
+    SystemTelemetryRefreshed((SystemTelemetry, Option<CpuSample>)),
     LauncherPageSelected(LauncherPage),
     SearchChanged(String),
     SortChanged(SortMode),
@@ -66,6 +76,19 @@ pub enum Message {
     GameDirOverrideChanged(String),
     ServerChanged(String),
     OpenInstanceTab(String, InstanceTab),
+    SelectWorldsPanelTab(WorldsPanelTab),
+    WorldsLoaded(Result<Vec<WorldEntry>, AppError>),
+    ServersLoaded(Result<Vec<ServerEntry>, AppError>),
+    OpenWorldsFolder(String),
+    OpenServersFile(String),
+    PlayWorld {
+        instance_id: String,
+        world_folder: String,
+    },
+    PlayServer {
+        instance_id: String,
+        address: String,
+    },
     PlayInstance(String),
     StopInstance(String),
     LaunchStarted {

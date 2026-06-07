@@ -115,6 +115,8 @@ pub async fn create_instance_with_root_and_control(
         fullscreen: false,
         game_dir_override: String::new(),
         server: String::new(),
+        quick_play_world: String::new(),
+        quick_play_server: String::new(),
         run_state: InstanceRunState::Idle,
     })
 }

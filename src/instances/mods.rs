@@ -194,6 +194,7 @@ pub async fn delete_mod(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
+    remove_metadata_item(&instance_path, &mod_id).await?;
     list_mods(&instance_path).await
 }
 
@@ -318,7 +319,7 @@ async fn scan_installed_dir(
         }
         let id = format!("{dir_name}/{name}");
         let key = metadata_key(&id);
-        let meta = metadata.items.get(&key);
+        let meta = metadata_item(metadata, &key);
         let display_name = meta.and_then(|item| item.title.clone()).unwrap_or_else(|| {
             active_name
                 .trim_end_matches(".jar")
@@ -342,12 +343,32 @@ async fn scan_installed_dir(
 }
 
 fn metadata_key(id: &str) -> String {
-    id.trim_start_matches("mods/")
-        .trim_end_matches(".disabled")
-        .to_string()
-        .split_once('/')
-        .map(|_| id.trim_end_matches(".disabled").to_string())
-        .unwrap_or_else(|| format!("mods/{}", id.trim_end_matches(".disabled")))
+    let mut id = id.trim_start_matches('/').trim_end_matches(".disabled");
+    while let Some(rest) = id.strip_prefix("mods/mods/") {
+        id = rest;
+    }
+    if id.starts_with("mods/")
+        || id.starts_with("resourcepacks/")
+        || id.starts_with("shaderpacks/")
+        || id.contains('/')
+    {
+        id.to_string()
+    } else {
+        format!("mods/{id}")
+    }
+}
+
+fn legacy_metadata_key(key: &str) -> Option<String> {
+    key.strip_prefix("mods/")
+        .map(|_| format!("mods/{key}"))
+        .filter(|legacy| legacy != key)
+}
+
+fn metadata_item<'a>(metadata: &'a ModsMetadata, key: &str) -> Option<&'a ModMetadata> {
+    metadata
+        .items
+        .get(key)
+        .or_else(|| legacy_metadata_key(key).and_then(|legacy| metadata.items.get(&legacy)))
 }
 
 fn is_manageable_resource_path(path: &str) -> bool {
@@ -366,6 +387,28 @@ fn modpack_resource_category(path: &str) -> String {
     } else {
         "Modpacks".into()
     }
+}
+
+fn resource_category(kind: ModrinthKind, is_dependency: bool) -> &'static str {
+    if is_dependency {
+        return "Dependencies";
+    }
+    match kind {
+        ModrinthKind::Mods => "Installed",
+        ModrinthKind::Modpacks => "Modpacks",
+        ModrinthKind::ResourcePacks => "Resource Packs",
+        ModrinthKind::Shaders => "Shaders",
+    }
+}
+
+fn replacement_category(matches: &[InstalledResourceMatch], default_category: &str) -> String {
+    matches
+        .iter()
+        .find_map(|item| {
+            let category = item.category.trim();
+            (!category.is_empty()).then_some(category.to_string())
+        })
+        .unwrap_or_else(|| default_category.to_string())
 }
 
 fn pretty_resource_name(path: &str) -> String {
@@ -398,6 +441,22 @@ struct InstalledResourceIndex {
     titles: BTreeSet<String>,
     hashes: BTreeSet<String>,
     paths: BTreeSet<String>,
+    entries: Vec<InstalledResourceEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct InstalledResourceEntry {
+    path: String,
+    project_id: Option<String>,
+    title: Option<String>,
+    sha1: Option<String>,
+    category: String,
+}
+
+#[derive(Debug, Clone)]
+struct InstalledResourceMatch {
+    path: String,
+    category: String,
 }
 
 impl InstalledResourceIndex {
@@ -405,6 +464,9 @@ impl InstalledResourceIndex {
         let metadata = load_metadata(instance_path).await.unwrap_or_default();
         let mut index = Self::default();
         for (path, item) in &metadata.items {
+            if !metadata_resource_exists(instance_path, path).await {
+                continue;
+            }
             index
                 .paths
                 .insert(path.trim_end_matches(".disabled").to_string());
@@ -417,15 +479,34 @@ impl InstalledResourceIndex {
             if let Some(sha1) = &item.sha1 {
                 index.insert_sha1(sha1);
             }
+            index.entries.push(InstalledResourceEntry {
+                path: path.trim_end_matches(".disabled").to_string(),
+                project_id: item.project_id.as_deref().map(normalize_resource_identity),
+                title: item.title.as_deref().map(normalize_resource_identity),
+                sha1: item
+                    .sha1
+                    .as_deref()
+                    .map(|value| value.trim().to_ascii_lowercase()),
+                category: item.category.clone(),
+            });
         }
         for item in list_mods(instance_path).await.unwrap_or_default() {
-            index.paths.insert(metadata_key(&item.id));
+            let path = metadata_key(&item.id);
+            let title = normalize_resource_identity(&item.name);
+            index.paths.insert(path.clone());
             index.insert_title(&item.name);
+            index.entries.push(InstalledResourceEntry {
+                path,
+                project_id: None,
+                title: (!title.is_empty()).then_some(title),
+                sha1: None,
+                category: item.category,
+            });
         }
         Ok(index)
     }
 
-    fn contains(
+    fn contains_any(
         &self,
         project_id: Option<&str>,
         title: Option<&str>,
@@ -454,18 +535,61 @@ impl InstalledResourceIndex {
                 .is_some_and(|value| self.titles.contains(&value))
     }
 
+    fn contains_exact(&self, sha1: Option<&str>, relative_path: Option<&str>) -> bool {
+        let sha1 = sha1
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty());
+        if let Some(sha1) = sha1 {
+            return self.hashes.contains(&sha1);
+        }
+        relative_path
+            .map(metadata_key)
+            .is_some_and(|value| self.paths.contains(&value))
+    }
+
+    fn matching_replacements(
+        &self,
+        project_id: Option<&str>,
+        title: Option<&str>,
+        sha1: Option<&str>,
+        relative_path: &str,
+    ) -> Vec<InstalledResourceMatch> {
+        let identities = resource_identities(project_id, title, relative_path);
+        let sha1 = sha1.map(|value| value.trim().to_ascii_lowercase());
+        let path = metadata_key(relative_path);
+
+        self.entries
+            .iter()
+            .filter(|entry| entry.path != path)
+            .filter(|entry| entry.sha1.as_deref() != sha1.as_deref())
+            .filter(|entry| !entry.identities().is_disjoint(&identities))
+            .map(|entry| InstalledResourceMatch {
+                path: entry.path.clone(),
+                category: entry.category.clone(),
+            })
+            .collect()
+    }
+
     fn insert_candidate(
         &mut self,
         project_id: Option<&str>,
         title: Option<&str>,
         sha1: Option<&str>,
         relative_path: &str,
+        category: &str,
     ) {
         self.paths.insert(metadata_key(relative_path));
         self.insert_project_id_opt(project_id);
         self.insert_title_opt(title);
         self.insert_sha1_opt(sha1);
         self.insert_title(&pretty_resource_name(relative_path));
+        self.entries.push(InstalledResourceEntry {
+            path: metadata_key(relative_path),
+            project_id: project_id.map(normalize_resource_identity),
+            title: title.map(normalize_resource_identity),
+            sha1: sha1.map(|value| value.trim().to_ascii_lowercase()),
+            category: category.to_string(),
+        });
     }
 
     fn insert_project_id_opt(&mut self, project_id: Option<&str>) {
@@ -504,6 +628,37 @@ impl InstalledResourceIndex {
         let sha1 = sha1.trim().to_ascii_lowercase();
         if !sha1.is_empty() {
             self.hashes.insert(sha1);
+        }
+    }
+}
+
+impl InstalledResourceEntry {
+    fn identities(&self) -> BTreeSet<String> {
+        let mut identities = BTreeSet::new();
+        push_identity(&mut identities, self.project_id.as_deref());
+        push_identity(&mut identities, self.title.as_deref());
+        push_identity(&mut identities, Some(&pretty_resource_name(&self.path)));
+        identities
+    }
+}
+
+fn resource_identities(
+    project_id: Option<&str>,
+    title: Option<&str>,
+    relative_path: &str,
+) -> BTreeSet<String> {
+    let mut identities = BTreeSet::new();
+    push_identity(&mut identities, project_id);
+    push_identity(&mut identities, title);
+    push_identity(&mut identities, Some(&pretty_resource_name(relative_path)));
+    identities
+}
+
+fn push_identity(identities: &mut BTreeSet<String>, value: Option<&str>) {
+    if let Some(value) = value {
+        let value = normalize_resource_identity(value);
+        if !value.is_empty() {
+            identities.insert(value);
         }
     }
 }
@@ -570,6 +725,9 @@ async fn upsert_metadata(
             metadata.categories.push(record.category.clone());
         }
         let key = metadata_key(&record.id);
+        if let Some(legacy) = legacy_metadata_key(&key) {
+            metadata.items.remove(&legacy);
+        }
         let entry = metadata.items.entry(key).or_default();
         if let Some(title) = record.title {
             entry.title = Some(title);
@@ -589,6 +747,52 @@ async fn upsert_metadata(
     save_metadata(instance_path, &metadata).await
 }
 
+async fn remove_metadata_item(instance_path: &Path, id: &str) -> Result<(), AppError> {
+    let mut metadata = load_metadata(instance_path).await.unwrap_or_default();
+    remove_metadata_keys(&mut metadata, id);
+    save_metadata(instance_path, &metadata).await
+}
+
+async fn remove_replaced_resources(
+    instance_path: &Path,
+    paths: &BTreeSet<String>,
+) -> Result<(), AppError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut metadata = load_metadata(instance_path).await.unwrap_or_default();
+    for path in paths {
+        remove_metadata_keys(&mut metadata, path);
+        for candidate in [path.to_string(), format!("{path}.disabled")] {
+            if let Ok(file_path) = safe_instance_child(instance_path, &candidate) {
+                match tokio::fs::remove_file(file_path).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+    }
+    save_metadata(instance_path, &metadata).await
+}
+
+async fn metadata_resource_exists(instance_path: &Path, key: &str) -> bool {
+    let enabled = safe_instance_child(instance_path, key)
+        .ok()
+        .is_some_and(|path| path.exists());
+    if enabled {
+        return true;
+    }
+    let disabled_key = if key.ends_with(".disabled") {
+        key.to_string()
+    } else {
+        format!("{key}.disabled")
+    };
+    safe_instance_child(instance_path, &disabled_key)
+        .ok()
+        .is_some_and(|path| path.exists())
+}
+
 async fn load_metadata(instance_path: &Path) -> Result<ModsMetadata, AppError> {
     let path = metadata_path(instance_path);
     let bytes = match tokio::fs::read(path).await {
@@ -598,7 +802,44 @@ async fn load_metadata(instance_path: &Path) -> Result<ModsMetadata, AppError> {
         }
         Err(error) => return Err(AppError::Storage(error.to_string())),
     };
-    Ok(serde_json::from_slice(&bytes)?)
+    let mut metadata: ModsMetadata = serde_json::from_slice(&bytes)?;
+    normalize_metadata_keys(&mut metadata);
+    Ok(metadata)
+}
+
+fn remove_metadata_keys(metadata: &mut ModsMetadata, id: &str) {
+    let key = metadata_key(id);
+    metadata.items.remove(&key);
+    if let Some(legacy) = legacy_metadata_key(&key) {
+        metadata.items.remove(&legacy);
+    }
+}
+
+fn normalize_metadata_keys(metadata: &mut ModsMetadata) {
+    let items = std::mem::take(&mut metadata.items);
+    for (key, item) in items {
+        let key = metadata_key(&key);
+        let entry = metadata.items.entry(key).or_default();
+        merge_metadata(entry, item);
+    }
+}
+
+fn merge_metadata(target: &mut ModMetadata, source: ModMetadata) {
+    if target.title.is_none() {
+        target.title = source.title;
+    }
+    if target.icon.is_none() {
+        target.icon = source.icon;
+    }
+    if target.project_id.is_none() {
+        target.project_id = source.project_id;
+    }
+    if target.category.trim().is_empty() || target.category == installed_category() {
+        target.category = source.category;
+    }
+    if target.sha1.is_none() {
+        target.sha1 = source.sha1;
+    }
 }
 
 async fn save_metadata(instance_path: &Path, metadata: &ModsMetadata) -> Result<(), AppError> {
@@ -672,32 +913,28 @@ pub async fn search_modrinth(
         return Ok(Vec::new());
     }
     let loader = modrinth_loader(loader).ok();
-    let facets = match (kind, loader) {
-        (ModrinthKind::Mods | ModrinthKind::Modpacks, Some(loader)) => {
-            format!(
-                r#"[["project_type:{}"],["versions:{minecraft_version}"],["categories:{loader}"]]"#,
-                kind.project_type()
-            )
-        }
-        _ => format!(
-            r#"[["project_type:{}"],["versions:{minecraft_version}"]]"#,
-            kind.project_type()
-        ),
-    };
     let base = modrinth_base_url();
-    let url = format!(
-        "{base}/v2/search?query={}&limit=20&index=downloads&facets={}",
-        url_encode(query),
-        url_encode(&facets),
-    );
     let client = modrinth_client();
-    let response = client
-        .get(url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<ModrinthSearchResponse>()
-        .await?;
+    let candidates = minecraft_version_candidates(&minecraft_version);
+    let mut response = ModrinthSearchResponse { hits: Vec::new() };
+    for candidate in candidates {
+        let facets = modrinth_facets(kind, loader, &candidate);
+        let url = format!(
+            "{base}/v2/search?query={}&limit=20&index=downloads&facets={}",
+            url_encode(query),
+            url_encode(&facets),
+        );
+        response = client
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ModrinthSearchResponse>()
+            .await?;
+        if !response.hits.is_empty() {
+            break;
+        }
+    }
     let mut projects = Vec::new();
     for hit in response.hits {
         let icon = match hit.icon_url {
@@ -725,6 +962,21 @@ pub async fn search_modrinth(
         });
     }
     Ok(projects)
+}
+
+fn modrinth_facets(kind: ModrinthKind, loader: Option<&str>, minecraft_version: &str) -> String {
+    match (kind, loader) {
+        (ModrinthKind::Mods | ModrinthKind::Modpacks, Some(loader)) => {
+            format!(
+                r#"[["project_type:{}"],["versions:{minecraft_version}"],["categories:{loader}"]]"#,
+                kind.project_type()
+            )
+        }
+        _ => format!(
+            r#"[["project_type:{}"],["versions:{minecraft_version}"]]"#,
+            kind.project_type()
+        ),
+    }
 }
 
 pub async fn search_resources(
@@ -881,6 +1133,7 @@ pub async fn install_modrinth_project_with_status(
     let mut visited = BTreeSet::new();
     let mut jobs = Vec::new();
     let mut records = Vec::new();
+    let mut replacements = BTreeSet::new();
     let mut installed = InstalledResourceIndex::load(&instance_path).await?;
     collect_modrinth_jobs(
         kind,
@@ -892,9 +1145,11 @@ pub async fn install_modrinth_project_with_status(
         &mut visited,
         &mut jobs,
         &mut records,
+        &mut replacements,
     )
     .await?;
     download_modrinth_jobs_with_status(kind, jobs, status_tx, 0.10, 0.95).await?;
+    remove_replaced_resources(&instance_path, &replacements).await?;
     upsert_metadata(&instance_path, records).await?;
     list_mods(&instance_path).await
 }
@@ -944,6 +1199,7 @@ async fn install_modrinth_modpack(
     let index = read_mrpack_index(pack_path.clone()).await?;
     let mut jobs = Vec::new();
     let mut records = Vec::new();
+    let mut replacements = BTreeSet::new();
     let mut installed = InstalledResourceIndex::load(&instance_path).await?;
     let modpack_files = index
         .files
@@ -965,19 +1221,23 @@ async fn install_modrinth_modpack(
                 .map(|item| item.title.as_str())
                 .unwrap_or_else(|| file.path.as_str());
             let sha1 = file.hashes.sha1.clone();
-            if installed.contains(
+            if installed.contains_exact(sha1.as_deref(), Some(&file.path)) {
+                continue;
+            }
+            let matches = installed.matching_replacements(
                 project_id.as_deref(),
                 Some(title),
                 sha1.as_deref(),
-                Some(&file.path),
-            ) {
-                continue;
-            }
+                &file.path,
+            );
+            replacements.extend(matches.iter().map(|item| item.path.clone()));
+            let category = replacement_category(&matches, &modpack_resource_category(&file.path));
             installed.insert_candidate(
                 project_id.as_deref(),
                 Some(title),
                 sha1.as_deref(),
                 &file.path,
+                &category,
             );
             jobs.push(DownloadJob {
                 id: format!("mrpack:{}", file.path),
@@ -992,7 +1252,7 @@ async fn install_modrinth_modpack(
                     .as_ref()
                     .map(|item| item.title.clone())
                     .or_else(|| Some(pretty_resource_name(&file.path))),
-                category: modpack_resource_category(&file.path),
+                category,
                 icon: metadata.and_then(|item| item.icon),
                 project_id,
                 sha1,
@@ -1009,6 +1269,7 @@ async fn install_modrinth_modpack(
     }
     download_modrinth_jobs_with_status(ModrinthKind::Modpacks, jobs, status_tx.clone(), 0.22, 0.92)
         .await?;
+    remove_replaced_resources(&instance_path, &replacements).await?;
     send_install_status(&status_tx, "Applying modpack overrides", 0.95);
     extract_mrpack_overrides(pack_path, instance_path.clone()).await?;
     upsert_metadata(&instance_path, records).await
@@ -1155,6 +1416,7 @@ async fn install_curseforge_project_with_status(
     let mut visited = BTreeSet::new();
     let mut jobs = Vec::new();
     let mut records = Vec::new();
+    let mut replacements = BTreeSet::new();
     let mut installed = InstalledResourceIndex::load(&instance_path).await?;
     collect_curseforge_jobs(
         api_key,
@@ -1167,9 +1429,11 @@ async fn install_curseforge_project_with_status(
         &mut visited,
         &mut jobs,
         &mut records,
+        &mut replacements,
     )
     .await?;
     download_modrinth_jobs_with_status(kind, jobs, status_tx, 0.10, 0.95).await?;
+    remove_replaced_resources(&instance_path, &replacements).await?;
     upsert_metadata(&instance_path, records).await?;
     list_mods(&instance_path).await
 }
@@ -1186,6 +1450,7 @@ async fn collect_curseforge_jobs(
     visited: &mut BTreeSet<String>,
     jobs: &mut Vec<DownloadJob>,
     records: &mut Vec<ResourceInstallRecord>,
+    replacements: &mut BTreeSet<String>,
 ) -> Result<(), AppError> {
     let client = curseforge_client();
     let mut stack = vec![(project_id.to_string(), false)];
@@ -1194,14 +1459,6 @@ async fn collect_curseforge_jobs(
             continue;
         }
         let project = curseforge_mod(&client, api_key, &project_id).await.ok();
-        if installed.contains(
-            Some(&project_id),
-            project.as_ref().map(|item| item.name.as_str()),
-            None,
-            None,
-        ) {
-            continue;
-        }
         let file =
             compatible_curseforge_file(&client, api_key, &project_id, minecraft_version, loader)
                 .await?;
@@ -1223,19 +1480,24 @@ async fn collect_curseforge_jobs(
             .iter()
             .find(|hash| hash.algo == 1)
             .map(|hash| hash.value.clone());
-        if installed.contains(
+        if installed.contains_exact(sha1.as_deref(), Some(&relative_path)) {
+            continue;
+        }
+        let matches = installed.matching_replacements(
             Some(&project_id),
             project.as_ref().map(|item| item.name.as_str()),
             sha1.as_deref(),
-            Some(&relative_path),
-        ) {
-            continue;
-        }
+            &relative_path,
+        );
+        replacements.extend(matches.iter().map(|item| item.path.clone()));
+        let default_category = resource_category(kind, is_dependency);
+        let category = replacement_category(&matches, default_category);
         installed.insert_candidate(
             Some(&project_id),
             project.as_ref().map(|item| item.name.as_str()),
             sha1.as_deref(),
             &relative_path,
+            &category,
         );
         jobs.push(DownloadJob {
             id: format!("curseforge:{project_id}:{}", file.file_name),
@@ -1255,16 +1517,7 @@ async fn collect_curseforge_jobs(
         records.push(ResourceInstallRecord {
             id: relative_path,
             title: project.map(|item| item.name),
-            category: if is_dependency {
-                "Dependencies".into()
-            } else {
-                match kind {
-                    ModrinthKind::Mods => "Installed".into(),
-                    ModrinthKind::Modpacks => "Modpacks".into(),
-                    ModrinthKind::ResourcePacks => "Resource Packs".into(),
-                    ModrinthKind::Shaders => "Shaders".into(),
-                }
-            },
+            category,
             icon,
             project_id: Some(project_id),
             sha1,
@@ -1413,27 +1666,24 @@ async fn collect_modrinth_jobs(
     visited: &mut BTreeSet<String>,
     jobs: &mut Vec<DownloadJob>,
     records: &mut Vec<ResourceInstallRecord>,
+    replacements: &mut BTreeSet<String>,
 ) -> Result<(), AppError> {
-    let mut stack = vec![(project_id.to_string(), false)];
-    while let Some((project_id, is_dependency)) = stack.pop() {
+    let mut stack: Vec<(String, Option<String>, bool)> =
+        vec![(project_id.to_string(), None, false)];
+    while let Some((project_id, version_id, is_dependency)) = stack.pop() {
         if !visited.insert(project_id.clone()) {
             continue;
         }
         let metadata = modrinth_project_metadata(&project_id).await.ok();
-        if installed.contains(
-            Some(&project_id),
-            metadata.as_ref().map(|item| item.title.as_str()),
-            None,
-            None,
-        ) {
-            continue;
-        }
-        let version = compatible_modrinth_version(&project_id, minecraft_version, loader).await?;
+        let version = match version_id {
+            Some(version_id) => modrinth_version_by_id(&version_id).await?,
+            None => compatible_modrinth_version(&project_id, minecraft_version, loader).await?,
+        };
         for dependency in &version.dependencies {
             if dependency.dependency_type == "required" {
                 if let Some(project_id) = &dependency.project_id {
                     if !visited.contains(project_id) {
-                        stack.push((project_id.clone(), true));
+                        stack.push((project_id.clone(), dependency.version_id.clone(), true));
                     }
                 }
             }
@@ -1445,19 +1695,24 @@ async fn collect_modrinth_jobs(
         })?;
         let relative_path = format!("{}/{}", modrinth_install_dir(kind), file.filename);
         let sha1 = file.hashes.sha1.clone();
-        if installed.contains(
+        if installed.contains_exact(sha1.as_deref(), Some(&relative_path)) {
+            continue;
+        }
+        let matches = installed.matching_replacements(
             Some(&project_id),
             metadata.as_ref().map(|item| item.title.as_str()),
             sha1.as_deref(),
-            Some(&relative_path),
-        ) {
-            continue;
-        }
+            &relative_path,
+        );
+        replacements.extend(matches.iter().map(|item| item.path.clone()));
+        let default_category = resource_category(kind, is_dependency);
+        let category = replacement_category(&matches, default_category);
         installed.insert_candidate(
             Some(&project_id),
             metadata.as_ref().map(|item| item.title.as_str()),
             sha1.as_deref(),
             &relative_path,
+            &category,
         );
         jobs.push(DownloadJob {
             id: format!("modrinth:{project_id}:{}", file.filename),
@@ -1469,16 +1724,7 @@ async fn collect_modrinth_jobs(
         records.push(ResourceInstallRecord {
             id: relative_path,
             title: metadata.as_ref().map(|item| item.title.clone()),
-            category: if is_dependency {
-                "Dependencies".into()
-            } else {
-                match kind {
-                    ModrinthKind::Mods => "Installed".into(),
-                    ModrinthKind::Modpacks => "Modpacks".into(),
-                    ModrinthKind::ResourcePacks => "Resource Packs".into(),
-                    ModrinthKind::Shaders => "Shaders".into(),
-                }
-            },
+            category,
             icon: metadata.and_then(|item| item.icon),
             project_id: Some(project_id),
             sha1,
@@ -1493,34 +1739,75 @@ async fn compatible_modrinth_version(
     loader: Option<&str>,
 ) -> Result<ModrinthVersion, AppError> {
     let base = modrinth_base_url();
-    let url = if let Some(loader) = loader {
-        format!(
-            "{base}/v2/project/{}/version?loaders={}&game_versions={}",
-            url_encode(project_id),
-            url_encode(&format!(r#"["{loader}"]"#)),
-            url_encode(&format!(r#"["{minecraft_version}"]"#)),
-        )
-    } else {
-        format!(
-            "{base}/v2/project/{}/version?game_versions={}",
-            url_encode(project_id),
-            url_encode(&format!(r#"["{minecraft_version}"]"#)),
-        )
-    };
+    let client = modrinth_client();
+    for candidate in minecraft_version_candidates(minecraft_version) {
+        let url = if let Some(loader) = loader {
+            format!(
+                "{base}/v2/project/{}/version?loaders={}&game_versions={}",
+                url_encode(project_id),
+                url_encode(&format!(r#"["{loader}"]"#)),
+                url_encode(&format!(r#"["{candidate}"]"#)),
+            )
+        } else {
+            format!(
+                "{base}/v2/project/{}/version?game_versions={}",
+                url_encode(project_id),
+                url_encode(&format!(r#"["{candidate}"]"#)),
+            )
+        };
+        let versions = client
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Vec<ModrinthVersion>>()
+            .await?;
+        if let Some(version) = versions.into_iter().next() {
+            return Ok(version);
+        }
+    }
+    Err(AppError::Download(format!(
+        "no compatible Modrinth version found for {project_id}"
+    )))
+}
+
+async fn modrinth_version_by_id(version_id: &str) -> Result<ModrinthVersion, AppError> {
+    let base = modrinth_base_url();
     modrinth_client()
-        .get(url)
+        .get(format!("{base}/v2/version/{}", url_encode(version_id)))
         .send()
         .await?
         .error_for_status()?
-        .json::<Vec<ModrinthVersion>>()
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| {
-            AppError::Download(format!(
-                "no compatible Modrinth version found for {project_id}"
-            ))
-        })
+        .json::<ModrinthVersion>()
+        .await
+        .map_err(Into::into)
+}
+
+fn minecraft_version_candidates(version: &str) -> Vec<String> {
+    let trimmed = version.trim();
+    let mut candidates = Vec::new();
+    push_unique(&mut candidates, trimmed);
+    let normalized = trimmed.split_once('-').map_or(trimmed, |(head, _)| head);
+    match normalized {
+        "26.1" => {
+            push_unique(&mut candidates, "26.1.2");
+            push_unique(&mut candidates, "26.1.1");
+            push_unique(&mut candidates, "26.1.0");
+            push_unique(&mut candidates, "1.21.8");
+        }
+        "26.1.0" | "26.1.1" | "26.1.2" => {
+            push_unique(&mut candidates, "26.1");
+            push_unique(&mut candidates, "1.21.8");
+        }
+        _ => {}
+    }
+    candidates
+}
+
+fn push_unique(candidates: &mut Vec<String>, value: &str) {
+    if !value.is_empty() && !candidates.iter().any(|candidate| candidate == value) {
+        candidates.push(value.to_string());
+    }
 }
 
 async fn compatible_curseforge_file(
@@ -1827,6 +2114,8 @@ struct ModrinthHashes {
 #[derive(Debug, Deserialize)]
 struct ModrinthDependency {
     project_id: Option<String>,
+    #[serde(default)]
+    version_id: Option<String>,
     dependency_type: String,
 }
 
@@ -2197,6 +2486,7 @@ mod tests {
         let mut visited = BTreeSet::new();
         let mut jobs = Vec::new();
         let mut records = Vec::new();
+        let mut replacements = BTreeSet::new();
         let mut installed = InstalledResourceIndex::default();
 
         let result = collect_modrinth_jobs(
@@ -2209,6 +2499,7 @@ mod tests {
             &mut visited,
             &mut jobs,
             &mut records,
+            &mut replacements,
         )
         .await;
 
@@ -2228,7 +2519,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn modrinth_skips_dependency_already_installed_by_modpack_title() {
+    async fn modrinth_replaces_dependency_when_installed_hash_differs() {
         let _env_guard = modrinth_env_guard().await;
         let root_json = json!([
             {
@@ -2236,18 +2527,16 @@ mod tests {
                     {"url": "http://example/not-enough-vulkan.jar", "filename": "not-enough-vulkan.jar", "hashes": {"sha1": "root"}, "primary": true}
                 ],
                 "dependencies": [
-                    {"project_id": "vulkanmod", "dependency_type": "required"}
+                    {"project_id": "vulkanmod", "version_id": "vulkan-new", "dependency_type": "required"}
                 ]
             }
         ]);
-        let vulkan_json = json!([
-            {
-                "files": [
-                    {"url": "http://example/vulkanmod.jar", "filename": "vulkanmod.jar", "hashes": {"sha1": "vulkan"}, "primary": true}
-                ],
-                "dependencies": []
-            }
-        ]);
+        let vulkan_json = json!({
+            "files": [
+                {"url": "http://example/vulkanmod.jar", "filename": "vulkanmod.jar", "hashes": {"sha1": "vulkan"}, "primary": true}
+            ],
+            "dependencies": []
+        });
         let root_project = json!({
             "id": "root",
             "title": "Not Enough Vulkan",
@@ -2273,7 +2562,7 @@ mod tests {
             root_json.to_string().into_bytes(),
         );
         routes.insert(
-            "/v2/project/vulkanmod/version".to_string(),
+            "/v2/version/vulkan-new".to_string(),
             vulkan_json.to_string().into_bytes(),
         );
         routes.insert(
@@ -2292,8 +2581,15 @@ mod tests {
         let mut visited = BTreeSet::new();
         let mut jobs = Vec::new();
         let mut records = Vec::new();
+        let mut replacements = BTreeSet::new();
         let mut installed = InstalledResourceIndex::default();
-        installed.insert_title("VulkanMod");
+        installed.insert_candidate(
+            Some("vulkanmod"),
+            Some("VulkanMod"),
+            Some("old-vulkan"),
+            "mods/vulkanmod-old.jar",
+            "Modpacks",
+        );
 
         let result = collect_modrinth_jobs(
             ModrinthKind::Mods,
@@ -2305,6 +2601,7 @@ mod tests {
             &mut visited,
             &mut jobs,
             &mut records,
+            &mut replacements,
         )
         .await;
 
@@ -2312,10 +2609,122 @@ mod tests {
         handle.abort();
 
         assert!(result.is_ok());
-        assert_eq!(jobs.len(), 1);
-        assert!(jobs[0].id.starts_with("modrinth:root:"));
-        assert!(!jobs.iter().any(|job| job.id.contains("vulkanmod")));
-        assert_eq!(records.len(), 1);
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().any(|job| job.id.starts_with("modrinth:root:")));
+        assert!(jobs.iter().any(|job| job.id.contains("vulkanmod")));
+        assert!(
+            replacements.contains("mods/vulkanmod-old.jar"),
+            "{replacements:?}"
+        );
+        assert_eq!(records.len(), 2);
+        let vulkan_record = records
+            .iter()
+            .find(|record| record.project_id.as_deref() == Some("vulkanmod"))
+            .unwrap();
+        assert_eq!(vulkan_record.category, "Modpacks");
+    }
+
+    #[tokio::test]
+    async fn stale_metadata_does_not_mark_missing_mod_installed() {
+        let instance_path = temp_dir("stale-metadata");
+        upsert_metadata(
+            &instance_path,
+            vec![ResourceInstallRecord {
+                id: "mods/vulkanmod.jar".into(),
+                title: Some("VulkanMod".into()),
+                category: "Modpacks".into(),
+                icon: None,
+                project_id: Some("vulkanmod".into()),
+                sha1: Some("deadbeef".into()),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let index = InstalledResourceIndex::load(&instance_path).await.unwrap();
+        assert!(!index.contains_any(
+            Some("vulkanmod"),
+            Some("VulkanMod"),
+            Some("deadbeef"),
+            Some("mods/vulkanmod.jar"),
+        ));
+    }
+
+    #[tokio::test]
+    async fn deleting_mod_removes_metadata_record() {
+        let instance_path = temp_dir("delete-metadata");
+        std::fs::create_dir_all(instance_path.join("mods")).unwrap();
+        std::fs::write(instance_path.join("mods/vulkanmod.jar"), b"jar").unwrap();
+        upsert_metadata(
+            &instance_path,
+            vec![ResourceInstallRecord {
+                id: "mods/vulkanmod.jar".into(),
+                title: Some("VulkanMod".into()),
+                category: "Modpacks".into(),
+                icon: None,
+                project_id: Some("vulkanmod".into()),
+                sha1: None,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let mods = delete_mod(instance_path.clone(), "mods/vulkanmod.jar".into())
+            .await
+            .unwrap();
+        let metadata = load_metadata(&instance_path).await.unwrap();
+
+        assert!(mods.is_empty());
+        assert!(!metadata.items.contains_key("mods/vulkanmod.jar"));
+    }
+
+    #[tokio::test]
+    async fn legacy_double_mods_metadata_still_labels_installed_mod() {
+        let instance_path = temp_dir("legacy-metadata");
+        std::fs::create_dir_all(instance_path.join("mods")).unwrap();
+        std::fs::write(instance_path.join("mods/vulkanmod-0.6.3.jar"), b"jar").unwrap();
+        let mut metadata = ModsMetadata::default();
+        metadata.items.insert(
+            "mods/mods/vulkanmod-0.6.3.jar".into(),
+            ModMetadata {
+                title: Some("VulkanMod".into()),
+                category: "Modpacks".into(),
+                icon: Some(vec![1, 2, 3]),
+                project_id: Some("vulkanmod".into()),
+                sha1: Some("abc".into()),
+            },
+        );
+        save_metadata(&instance_path, &metadata).await.unwrap();
+
+        let mods = list_mods(&instance_path).await.unwrap();
+
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].name, "VulkanMod");
+        assert_eq!(mods[0].category, "Modpacks");
+        assert_eq!(mods[0].icon, Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn dependency_replacement_matches_old_filename_title() {
+        let mut installed = InstalledResourceIndex::default();
+        installed.insert_candidate(
+            None,
+            Some("vulkanmod-0.6.3"),
+            Some("old-vulkan"),
+            "mods/vulkanmod-0.6.3.jar",
+            "Modpacks",
+        );
+
+        let matches = installed.matching_replacements(
+            Some("vulkanmod"),
+            Some("VulkanMod"),
+            Some("new-vulkan"),
+            "mods/vulkanmod-0.6.7.jar",
+        );
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].path, "mods/vulkanmod-0.6.3.jar");
+        assert_eq!(replacement_category(&matches, "Dependencies"), "Modpacks");
     }
 
     #[tokio::test]

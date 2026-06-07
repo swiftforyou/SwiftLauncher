@@ -226,7 +226,7 @@ fn provider_card<'a>(
     let badge: Element<'a, Message> = if selected {
         container(text("ACTIVE").size(11))
             .padding([4, 8])
-            .style(theme::active_badge)
+            .style(theme::auth_active_badge)
             .into()
     } else if compact {
         Space::with_width(Length::Shrink).into()

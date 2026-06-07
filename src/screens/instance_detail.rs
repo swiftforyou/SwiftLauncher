@@ -266,10 +266,7 @@ fn mods<'a>(
     modrinth_install_progress: f32,
 ) -> Element<'a, Message> {
     let search = mods_search.to_lowercase();
-    let filtered = installed_mods
-        .iter()
-        .filter(|item| item.name.to_lowercase().contains(&search))
-        .collect::<Vec<_>>();
+    const MAX_VISIBLE_MOD_ROWS: usize = 220;
 
     let mut list = column![].spacing(8);
     if loading {
@@ -291,16 +288,43 @@ fn mods<'a>(
             .padding(10)
             .style(theme::card),
         );
-    } else if filtered.is_empty() {
-        list = list.push(text("No mods installed").size(13));
     } else {
-        let mut current_category = String::new();
-        for item in filtered {
-            if item.category != current_category {
-                current_category = item.category.clone();
-                list = list.push(text(current_category.clone()).size(15));
+        let mut current_category: Option<&str> = None;
+        let mut visible_count = 0usize;
+        let mut match_count = 0usize;
+
+        for item in installed_mods {
+            if !search.is_empty() && !item.name.to_lowercase().contains(&search) {
+                continue;
+            }
+
+            match_count += 1;
+            if visible_count >= MAX_VISIBLE_MOD_ROWS {
+                continue;
+            }
+
+            let category = item.category.as_str();
+            if current_category != Some(category) {
+                current_category = Some(category);
+                list = list.push(text(category).size(15));
             }
             list = list.push(mod_row(item, mod_categories));
+            visible_count += 1;
+        }
+
+        if match_count == 0 {
+            list = list.push(text("No mods installed").size(13));
+        } else if match_count > visible_count {
+            list = list.push(
+                container(
+                    text(format!(
+                        "Showing first {visible_count} of {match_count}. Refine search to narrow."
+                    ))
+                    .size(12),
+                )
+                .padding(10)
+                .style(theme::card),
+            );
         }
     }
 
@@ -483,9 +507,9 @@ fn modrinth_detail_view<'a>(
 
     if !detail.gallery.is_empty() {
         let mut gallery = row![].spacing(8);
-        for bytes in &detail.gallery {
+        for path in &detail.gallery {
             gallery = gallery.push(
-                image(image::Handle::from_bytes(bytes.clone()))
+                image(image::Handle::from_path(path))
                     .width(Length::Fixed(150.0))
                     .height(Length::Fixed(90.0))
                     .content_fit(iced::ContentFit::Cover),
@@ -534,9 +558,9 @@ fn install_resource_button(
     .padding([8, 12])
 }
 
-fn project_icon(icon: Option<&Vec<u8>>, size: f32) -> Element<'_, Message> {
+fn project_icon(icon: Option<&std::path::PathBuf>, size: f32) -> Element<'_, Message> {
     match icon {
-        Some(bytes) => image(image::Handle::from_bytes(bytes.clone()))
+        Some(path) => image(image::Handle::from_path(path))
             .width(Length::Fixed(size))
             .height(Length::Fixed(size))
             .content_fit(iced::ContentFit::Cover)
@@ -719,7 +743,7 @@ fn world_card<'a>(instance: &'a Instance, world: &'a WorldEntry) -> Element<'a, 
 
 fn server_card<'a>(instance: &'a Instance, server: &'a ServerEntry) -> Element<'a, Message> {
     entity_card(
-        world_icon(server.icon.as_ref(), icons::WORLD),
+        server_icon(server.icon.as_ref(), icons::WORLD),
         server.name.clone(),
         server.address.clone(),
         Some(
@@ -835,7 +859,27 @@ fn world_last_played(timestamp: Option<u64>) -> String {
     }
 }
 
-fn world_icon<'a>(icon: Option<&Vec<u8>>, fallback: &'static [u8]) -> Element<'a, Message> {
+fn world_icon<'a>(
+    icon: Option<&std::path::PathBuf>,
+    fallback: &'static [u8],
+) -> Element<'a, Message> {
+    match icon {
+        Some(path) => image(image::Handle::from_path(path))
+            .width(Length::Fixed(42.0))
+            .height(Length::Fixed(42.0))
+            .content_fit(iced::ContentFit::Cover)
+            .into(),
+        None => container(svg_icon(fallback, 22.0))
+            .width(Length::Fixed(42.0))
+            .height(Length::Fixed(42.0))
+            .center_x(Length::Fixed(42.0))
+            .center_y(Length::Fixed(42.0))
+            .style(theme::surface)
+            .into(),
+    }
+}
+
+fn server_icon<'a>(icon: Option<&Vec<u8>>, fallback: &'static [u8]) -> Element<'a, Message> {
     match icon {
         Some(bytes) => image(image::Handle::from_bytes(bytes.clone()))
             .width(Length::Fixed(42.0))

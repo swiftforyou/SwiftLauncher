@@ -986,9 +986,9 @@ fn discover_meta(item: &ModrinthProject) -> Element<'_, Message> {
     meta.into()
 }
 
-fn project_icon(icon: Option<&Vec<u8>>, size: f32) -> Element<'_, Message> {
+fn project_icon(icon: Option<&std::path::PathBuf>, size: f32) -> Element<'_, Message> {
     match icon {
-        Some(bytes) => image(image::Handle::from_bytes(bytes.clone()))
+        Some(path) => image(image::Handle::from_path(path))
             .width(Length::Fixed(size))
             .height(Length::Fixed(size))
             .content_fit(iced::ContentFit::Cover)

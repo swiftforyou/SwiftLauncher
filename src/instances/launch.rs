@@ -201,8 +201,7 @@ async fn authlib_matches(destination: &Path, expected_sha256: &str) -> Result<bo
     if tokio::fs::metadata(destination).await.is_err() {
         return Ok(false);
     }
-    let bytes = tokio::fs::read(destination).await?;
-    Ok(sha256_hex(&bytes) == expected_sha256.to_lowercase())
+    Ok(sha256_file(destination).await? == expected_sha256.to_lowercase())
 }
 
 async fn download_authlib_artifact(
@@ -214,33 +213,63 @@ async fn download_authlib_artifact(
         tokio::fs::create_dir_all(parent).await?;
     }
     let temp_path = destination.with_extension("part");
-    let bytes = client
+    let mut response = client
         .get(&artifact.download_url)
         .send()
         .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
-    let actual_sha256 = sha256_hex(&bytes);
+        .error_for_status()?;
+    let mut context = digest::Context::new(&digest::SHA256);
+    let mut file = tokio::fs::File::create(&temp_path).await?;
+    while let Some(chunk) = response.chunk().await? {
+        context.update(&chunk);
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    drop(file);
+    let actual_sha256 = digest_to_hex(context.finish().as_ref());
     if actual_sha256 != artifact.checksums.sha256.to_lowercase() {
+        let _ = tokio::fs::remove_file(&temp_path).await;
         return Err(AppError::Download(format!(
             "authlib-injector sha256 mismatch: expected {}, got {actual_sha256}",
             artifact.checksums.sha256
         )));
     }
-    let mut file = tokio::fs::File::create(&temp_path).await?;
-    file.write_all(&bytes).await?;
-    file.flush().await?;
-    drop(file);
     let _ = tokio::fs::remove_file(destination).await;
     tokio::fs::rename(&temp_path, destination).await?;
     Ok(())
 }
 
+async fn sha256_file(path: &Path) -> Result<String, AppError> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let mut file =
+            std::fs::File::open(path).map_err(|error| AppError::Download(error.to_string()))?;
+        let mut context = digest::Context::new(&digest::SHA256);
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file
+                .read(&mut buffer)
+                .map_err(|error| AppError::Download(error.to_string()))?;
+            if read == 0 {
+                break;
+            }
+            context.update(&buffer[..read]);
+        }
+        Ok(digest_to_hex(context.finish().as_ref()))
+    })
+    .await
+    .map_err(|error| AppError::Download(error.to_string()))?
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let hash = digest::digest(&digest::SHA256, bytes);
-    let mut out = String::with_capacity(hash.as_ref().len() * 2);
-    for byte in hash.as_ref() {
+    digest_to_hex(hash.as_ref())
+}
+
+fn digest_to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
         out.push_str(&format!("{byte:02x}"));
     }
     out

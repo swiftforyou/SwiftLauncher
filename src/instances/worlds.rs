@@ -12,7 +12,7 @@ pub struct WorldEntry {
     pub folder_name: String,
     pub display_name: String,
     pub path: PathBuf,
-    pub icon: Option<Vec<u8>>,
+    pub icon: Option<PathBuf>,
     pub game_mode: Option<WorldGameMode>,
     pub hardcore: bool,
     pub cheats: Option<bool>,
@@ -107,7 +107,8 @@ fn list_worlds_blocking(instance: &Instance) -> Result<Vec<WorldEntry>, AppError
             .display_name
             .clone()
             .unwrap_or_else(|| folder_name.clone());
-        let icon = std::fs::read(path.join("icon.png")).ok();
+        let icon = path.join("icon.png");
+        let icon = icon.exists().then_some(icon);
         worlds.push(WorldEntry {
             folder_name,
             display_name,

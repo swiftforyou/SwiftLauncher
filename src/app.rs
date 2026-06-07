@@ -362,8 +362,16 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::LauncherPageSelected(page) => {
+                let leaving_discover =
+                    self.launcher_page == LauncherPage::Discover && page != LauncherPage::Discover;
                 self.launcher_page = page;
                 self.settings_open = false;
+                if leaving_discover {
+                    self.clear_discover_memory();
+                }
+                if self.launcher_page != LauncherPage::Instances {
+                    self.clear_instance_panel_memory();
+                }
                 if matches!(page, LauncherPage::Discover)
                     && self.create_versions.len()
                         <= crate::instances::create::fallback_versions().len()
@@ -629,12 +637,18 @@ impl SwiftLauncher {
                 Task::none()
             }
             Message::SelectInstance(id) => {
+                if self.selected_instance.as_deref() != Some(&id) {
+                    self.clear_instance_panel_memory();
+                }
                 self.selected_instance = Some(id);
                 self.selected_tab = InstanceTab::Overview;
                 self.last_auto_scrolled_log_len = 0;
                 Task::none()
             }
             Message::OpenInstanceTab(id, tab) => {
+                if self.selected_instance.as_deref() != Some(&id) {
+                    self.clear_instance_panel_memory();
+                }
                 self.selected_instance = Some(id);
                 self.selected_tab = tab;
                 self.last_auto_scrolled_log_len = 0;
@@ -646,6 +660,7 @@ impl SwiftLauncher {
             }
             Message::CloseInstanceDetail => {
                 self.selected_instance = None;
+                self.clear_instance_panel_memory();
                 Task::none()
             }
             Message::SelectInstanceTab(tab) => {
@@ -2062,8 +2077,37 @@ impl SwiftLauncher {
         )
     }
 
+    fn clear_discover_memory(&mut self) {
+        self.modrinth_results.clear();
+        self.modrinth_detail = None;
+        self.modrinth_markdown.clear();
+        self.modrinth_detail_busy = false;
+        self.modrinth_busy = false;
+        self.pending_install_project_id = None;
+        self.pending_install_project_loaders.clear();
+        self.pending_install_targets.clear();
+        if !self.instance_selection_installing {
+            self.instance_selection_modal_open = false;
+            self.instance_selection_selected_instance = None;
+            self.instance_selection_install_status.clear();
+            self.instance_selection_install_progress = 0.0;
+        }
+    }
+
+    fn clear_instance_panel_memory(&mut self) {
+        self.installed_mods.clear();
+        self.mod_categories = crate::instances::mods::default_mod_categories();
+        self.worlds.clear();
+        self.servers.clear();
+        self.mods_loading = false;
+        self.worlds_loading = false;
+        self.servers_loading = false;
+        self.mod_import_path.clear();
+        self.mods_search.clear();
+    }
+
     fn push_launch_log(&mut self, line: String) {
-        const MAX_LOG_LINES: usize = 500;
+        const MAX_LOG_LINES: usize = 250;
         self.launch_log.push(line);
         if self.launch_log.len() > MAX_LOG_LINES {
             let overflow = self.launch_log.len() - MAX_LOG_LINES;
@@ -2076,7 +2120,7 @@ impl SwiftLauncher {
     }
 
     fn push_instance_launch_logs(&mut self, instance_id: &str, lines: Vec<String>) {
-        const MAX_LOG_LINES: usize = 700;
+        const MAX_LOG_LINES: usize = 350;
         let log = self
             .launch_logs_by_instance
             .entry(instance_id.to_string())
@@ -2550,8 +2594,8 @@ fn launch_subscription(
                 tokio::select! {
                     Some(line) = line_rx.recv() => {
                         report_lines.push(line.clone());
-                        if report_lines.len() > 2_000 {
-                            let overflow = report_lines.len() - 2_000;
+                        if report_lines.len() > 700 {
+                            let overflow = report_lines.len() - 700;
                             report_lines.drain(0..overflow);
                         }
                         if let Some(event) = monitor.on_line(&line) {
@@ -2564,7 +2608,7 @@ fn launch_subscription(
                             }
                         }
                         pending_lines.push(line);
-                        if pending_lines.len() >= 80 {
+                        if pending_lines.len() >= 48 {
                             let lines = std::mem::take(&mut pending_lines);
                             let _ = output.send(Message::LaunchOutputBatch {
                                 instance_id: instance_id.clone(),

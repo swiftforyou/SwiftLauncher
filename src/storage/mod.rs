@@ -27,7 +27,11 @@ impl SledStore {
     pub fn open_at(path: PathBuf) -> Result<Self, AppError> {
         std::fs::create_dir_all(&path).map_err(|e| AppError::Storage(e.to_string()))?;
         Ok(Self {
-            db: sled::open(path)?,
+            db: sled::Config::new()
+                .path(path)
+                .cache_capacity(16 * 1024 * 1024)
+                .flush_every_ms(Some(2_000))
+                .open()?,
         })
     }
 

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use ring::digest;
 use serde::{Deserialize, Serialize};
 
 use crate::download::{
@@ -76,7 +77,7 @@ pub struct InstalledMod {
     pub version: String,
     pub enabled: bool,
     pub category: String,
-    pub icon: Option<Vec<u8>>,
+    pub icon: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,7 +88,7 @@ pub struct ModrinthProject {
     pub author: String,
     pub description: String,
     pub downloads: u64,
-    pub icon: Option<Vec<u8>>,
+    pub icon: Option<PathBuf>,
     pub categories: Vec<String>,
     pub loaders: Vec<String>,
     pub client_side: Option<String>,
@@ -103,8 +104,8 @@ pub struct ModrinthProjectDetail {
     pub description: String,
     pub body: String,
     pub downloads: u64,
-    pub icon: Option<Vec<u8>>,
-    pub gallery: Vec<Vec<u8>>,
+    pub icon: Option<PathBuf>,
+    pub gallery: Vec<PathBuf>,
     pub kind: ModrinthKind,
     pub provider: ResourceProvider,
 }
@@ -336,7 +337,7 @@ async fn scan_installed_dir(
                 .map(|item| item.category.clone())
                 .filter(|category| !category.trim().is_empty())
                 .unwrap_or_else(|| default_category.to_string()),
-            icon: meta.and_then(|item| item.icon.clone()),
+            icon: meta.and_then(|item| item.icon_path.clone()),
         });
     }
     Ok(())
@@ -734,7 +735,7 @@ async fn upsert_metadata(
         }
         entry.category = record.category;
         if record.icon.is_some() {
-            entry.icon = record.icon;
+            entry.icon_path = record.icon;
         }
         if record.project_id.is_some() {
             entry.project_id = record.project_id;
@@ -804,7 +805,33 @@ async fn load_metadata(instance_path: &Path) -> Result<ModsMetadata, AppError> {
     };
     let mut metadata: ModsMetadata = serde_json::from_slice(&bytes)?;
     normalize_metadata_keys(&mut metadata);
+    migrate_metadata_icons(instance_path, &mut metadata).await?;
     Ok(metadata)
+}
+
+async fn migrate_metadata_icons(
+    instance_path: &Path,
+    metadata: &mut ModsMetadata,
+) -> Result<(), AppError> {
+    let mut changed = false;
+    for (key, item) in &mut metadata.items {
+        if item.icon_path.is_none() {
+            if let Some(bytes) = item.icon.take() {
+                let path = cached_metadata_icon_path(instance_path, key)?;
+                if write_compact_image(&bytes, &path, 96).await.is_ok() {
+                    item.icon_path = Some(path);
+                }
+                changed = true;
+            }
+        } else if item.icon.is_some() {
+            item.icon = None;
+            changed = true;
+        }
+    }
+    if changed {
+        save_metadata(instance_path, metadata).await?;
+    }
+    Ok(())
 }
 
 fn remove_metadata_keys(metadata: &mut ModsMetadata, id: &str) {
@@ -830,6 +857,9 @@ fn merge_metadata(target: &mut ModMetadata, source: ModMetadata) {
     }
     if target.icon.is_none() {
         target.icon = source.icon;
+    }
+    if target.icon_path.is_none() {
+        target.icon_path = source.icon_path;
     }
     if target.project_id.is_none() {
         target.project_id = source.project_id;
@@ -938,7 +968,7 @@ pub async fn search_modrinth(
     let mut projects = Vec::new();
     for hit in response.hits {
         let icon = match hit.icon_url {
-            Some(url) => fetch_image_bytes(&client, &url).await.ok(),
+            Some(url) => fetch_cached_image(&client, &url, 96).await.ok(),
             None => None,
         };
         projects.push(ModrinthProject {
@@ -1009,13 +1039,13 @@ pub async fn modrinth_project_detail(
         .json::<ModrinthProjectResponse>()
         .await?;
     let icon = match &project.icon_url {
-        Some(url) => fetch_image_bytes(&client, url).await.ok(),
+        Some(url) => fetch_cached_image(&client, url, 128).await.ok(),
         None => None,
     };
     let mut gallery = Vec::new();
-    for image in project.gallery.iter().take(4) {
-        if let Ok(bytes) = fetch_image_bytes(&client, &image.url).await {
-            gallery.push(bytes);
+    for image in project.gallery.iter().take(2) {
+        if let Ok(path) = fetch_cached_image(&client, &image.url, 640).await {
+            gallery.push(path);
         }
     }
     Ok(ModrinthProjectDetail {
@@ -1312,7 +1342,7 @@ async fn search_curseforge(
     for item in response.data {
         let icon_url = item.logo.and_then(|logo| logo.thumbnail_url.or(logo.url));
         let icon = match icon_url {
-            Some(url) => fetch_image_bytes(&client, &url).await.ok(),
+            Some(url) => fetch_cached_image(&client, &url, 96).await.ok(),
             None => None,
         };
         projects.push(ModrinthProject {
@@ -1373,18 +1403,18 @@ async fn curseforge_project_detail(
         .as_ref()
         .and_then(|logo| logo.thumbnail_url.as_ref().or(logo.url.as_ref()));
     let icon = match icon_url {
-        Some(url) => fetch_image_bytes(&client, url).await.ok(),
+        Some(url) => fetch_cached_image(&client, url, 128).await.ok(),
         None => None,
     };
     let mut gallery = Vec::new();
-    for screenshot in project.screenshots.iter().take(4) {
+    for screenshot in project.screenshots.iter().take(2) {
         let url = screenshot
             .thumbnail_url
             .as_ref()
             .or(screenshot.url.as_ref());
         if let Some(url) = url {
-            if let Ok(bytes) = fetch_image_bytes(&client, url).await {
-                gallery.push(bytes);
+            if let Ok(path) = fetch_cached_image(&client, url, 640).await {
+                gallery.push(path);
             }
         }
     }
@@ -1511,7 +1541,7 @@ async fn collect_curseforge_jobs(
             .and_then(|item| item.logo.as_ref())
             .and_then(|logo| logo.thumbnail_url.as_ref().or(logo.url.as_ref()))
         {
-            Some(url) => fetch_image_bytes(&client, url).await.ok(),
+            Some(url) => fetch_cached_image(&client, url, 96).await.ok(),
             None => None,
         };
         records.push(ResourceInstallRecord {
@@ -1890,7 +1920,7 @@ async fn modrinth_project_metadata(project_id: &str) -> Result<ProjectMetadata, 
         .json::<ModrinthProjectResponse>()
         .await?;
     let icon = match &project.icon_url {
-        Some(url) => fetch_image_bytes(&client, url).await.ok(),
+        Some(url) => fetch_cached_image(&client, url, 96).await.ok(),
         None => None,
     };
     Ok(ProjectMetadata {
@@ -1953,6 +1983,8 @@ struct ModMetadata {
     #[serde(default)]
     icon: Option<Vec<u8>>,
     #[serde(default)]
+    icon_path: Option<PathBuf>,
+    #[serde(default)]
     project_id: Option<String>,
     #[serde(default)]
     sha1: Option<String>,
@@ -1966,14 +1998,14 @@ struct ResourceInstallRecord {
     id: String,
     title: Option<String>,
     category: String,
-    icon: Option<Vec<u8>>,
+    icon: Option<PathBuf>,
     project_id: Option<String>,
     sha1: Option<String>,
 }
 
 struct ProjectMetadata {
     title: String,
-    icon: Option<Vec<u8>>,
+    icon: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2272,15 +2304,71 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-async fn fetch_image_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, AppError> {
-    Ok(client
+async fn fetch_cached_image(
+    client: &reqwest::Client,
+    url: &str,
+    max_side: u32,
+) -> Result<PathBuf, AppError> {
+    let path = cached_remote_image_path(url, max_side)?;
+    if tokio::fs::metadata(&path).await.is_ok() {
+        return Ok(path);
+    }
+    let bytes = client
         .get(url)
         .send()
         .await?
         .error_for_status()?
         .bytes()
         .await?
-        .to_vec())
+        .to_vec();
+    write_compact_image(&bytes, &path, max_side).await?;
+    Ok(path)
+}
+
+fn cached_remote_image_path(url: &str, max_side: u32) -> Result<PathBuf, AppError> {
+    let digest = digest::digest(&digest::SHA256, url.as_bytes());
+    let mut name = String::with_capacity(72);
+    for byte in digest.as_ref() {
+        name.push_str(&format!("{byte:02x}"));
+    }
+    Ok(crate::storage::data_dir()?
+        .join("image-cache")
+        .join(format!("{max_side}-{name}.png")))
+}
+
+fn cached_metadata_icon_path(instance_path: &Path, key: &str) -> Result<PathBuf, AppError> {
+    let digest = digest::digest(&digest::SHA256, key.as_bytes());
+    let mut name = String::with_capacity(68);
+    for byte in digest.as_ref() {
+        name.push_str(&format!("{byte:02x}"));
+    }
+    Ok(instance_path
+        .join(".swift")
+        .join("image-cache")
+        .join(format!("{name}.png")))
+}
+
+async fn write_compact_image(bytes: &[u8], path: &Path, max_side: u32) -> Result<(), AppError> {
+    let bytes = bytes.to_vec();
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || write_compact_image_blocking(&bytes, &path, max_side))
+        .await
+        .map_err(|error| AppError::Download(error.to_string()))?
+}
+
+fn write_compact_image_blocking(bytes: &[u8], path: &Path, max_side: u32) -> Result<(), AppError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| AppError::Storage(error.to_string()))?;
+    }
+    let image =
+        image::load_from_memory(bytes).map_err(|error| AppError::Download(error.to_string()))?;
+    let image = image.thumbnail(max_side, max_side);
+    let mut out = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .map_err(|error| AppError::Download(error.to_string()))?;
+    std::fs::write(path, out).map_err(|error| AppError::Storage(error.to_string()))?;
+    Ok(())
 }
 
 fn modrinth_client() -> reqwest::Client {
@@ -2683,15 +2771,27 @@ mod tests {
         let instance_path = temp_dir("legacy-metadata");
         std::fs::create_dir_all(instance_path.join("mods")).unwrap();
         std::fs::write(instance_path.join("mods/vulkanmod-0.6.3.jar"), b"jar").unwrap();
+        let mut icon = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            1,
+            1,
+            image::Rgba([1, 2, 3, 255]),
+        ))
+        .write_to(
+            &mut std::io::Cursor::new(&mut icon),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
         let mut metadata = ModsMetadata::default();
         metadata.items.insert(
             "mods/mods/vulkanmod-0.6.3.jar".into(),
             ModMetadata {
                 title: Some("VulkanMod".into()),
                 category: "Modpacks".into(),
-                icon: Some(vec![1, 2, 3]),
+                icon: Some(icon),
                 project_id: Some("vulkanmod".into()),
                 sha1: Some("abc".into()),
+                icon_path: None,
             },
         );
         save_metadata(&instance_path, &metadata).await.unwrap();
@@ -2701,7 +2801,7 @@ mod tests {
         assert_eq!(mods.len(), 1);
         assert_eq!(mods[0].name, "VulkanMod");
         assert_eq!(mods[0].category, "Modpacks");
-        assert_eq!(mods[0].icon, Some(vec![1, 2, 3]));
+        assert!(mods[0].icon.as_ref().is_some_and(|path| path.exists()));
     }
 
     #[test]

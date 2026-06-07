@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use ring::digest;
@@ -26,10 +27,21 @@ pub async fn verify_assets(assets: Vec<AssetCheck>) -> Result<(usize, usize), Ap
 pub async fn sha1_file(path: &Path) -> Result<String, AppError> {
     let path = path.to_path_buf();
     task::spawn_blocking(move || {
-        let bytes = std::fs::read(path).map_err(|e| AppError::Download(e.to_string()))?;
-        let _ring_digest = digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, &bytes);
+        let mut file = std::fs::File::open(path).map_err(|e| AppError::Download(e.to_string()))?;
+        let mut context = digest::Context::new(&digest::SHA1_FOR_LEGACY_USE_ONLY);
         let mut hasher = Sha1::new();
-        hasher.update(&bytes);
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file
+                .read(&mut buffer)
+                .map_err(|e| AppError::Download(e.to_string()))?;
+            if read == 0 {
+                break;
+            }
+            context.update(&buffer[..read]);
+            hasher.update(&buffer[..read]);
+        }
+        let _ring_digest = context.finish();
         let hash = hasher.finalize();
         let mut hex = String::with_capacity(hash.len() * 2);
         for byte in hash {

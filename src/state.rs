@@ -4,6 +4,7 @@ use crate::instances::Instance;
 #[derive(Debug, Clone)]
 pub enum AppState {
     Loading,
+    Initialize,
     Login,
     Home,
 }

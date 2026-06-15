@@ -31,6 +31,7 @@ fn main() -> iced::Result {
         .window(window::Settings {
             size: Size::new(1160.0, 760.0),
             min_size: Some(Size::new(860.0, 560.0)),
+            exit_on_close_request: false,
             ..window::Settings::default()
         })
         .run_with(SwiftLauncher::new)

@@ -8,6 +8,8 @@ use crate::theme::{Accent, ThemeMode};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LauncherSettings {
+    #[serde(default = "legacy_first_run_complete")]
+    pub first_run_complete: bool,
     pub theme_mode: ThemeMode,
     pub accent: Accent,
     pub ui_scale: u16,
@@ -27,6 +29,7 @@ impl Default for LauncherSettings {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join("instances");
         Self {
+            first_run_complete: false,
             theme_mode: ThemeMode::Dark,
             accent: Accent::Green,
             ui_scale: 100,
@@ -39,6 +42,10 @@ impl Default for LauncherSettings {
             curseforge_api_key: bundled_curseforge_api_key(),
         }
     }
+}
+
+fn legacy_first_run_complete() -> bool {
+    true
 }
 
 pub fn load(store: &SledStore) -> Result<LauncherSettings, AppError> {

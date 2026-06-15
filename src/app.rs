@@ -97,12 +97,16 @@ pub struct SwiftLauncher {
     launch_logs_by_instance: HashMap<String, Vec<String>>,
     launch_run_id: u64,
     active_launches: Vec<ActiveLaunch>,
+    discord_activity_signature: Option<String>,
     account_menu_open: bool,
     settings_open: bool,
     delete_confirm_id: Option<String>,
     window_width: f32,
     system_telemetry: crate::system::SystemTelemetry,
     previous_cpu_sample: Option<crate::system::CpuSample>,
+    setup_step: u8,
+    setup_desktop_integration: bool,
+    setup_busy: bool,
     avatar_cache: HashMap<String, PathBuf>,
     launch_status_by_instance: HashMap<String, String>,
     launch_progress_by_instance: HashMap<String, f32>,
@@ -120,12 +124,37 @@ pub struct SwiftLauncher {
     instance_selection_selected_instance: Option<String>,
 }
 
+const DISCORD_CLIENT_ID_MISSING: &str =
+    "Discord Rich Presence enabled, but no Discord client id is bundled";
+
+impl LauncherPage {
+    fn discord_label(self) -> &'static str {
+        match self {
+            Self::Home => "Home",
+            Self::Instances => "Instances",
+            Self::Discover => "Discovery",
+            Self::Accounts => "Accounts",
+            Self::Settings => "Settings",
+        }
+    }
+}
+
+impl Drop for SwiftLauncher {
+    fn drop(&mut self) {
+        if self.settings.discord_presence {
+            let _ = crate::discord::clear_activity_blocking();
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ActiveLaunch {
     run_id: u64,
     instance: Instance,
     session: Session,
     stop_tx: tokio::sync::watch::Sender<bool>,
+    discord_details: String,
+    discord_state: String,
 }
 
 #[derive(Clone)]
@@ -217,12 +246,16 @@ impl SwiftLauncher {
             launch_logs_by_instance: HashMap::new(),
             launch_run_id: 0,
             active_launches: Vec::new(),
+            discord_activity_signature: None,
             account_menu_open: false,
             settings_open: false,
             delete_confirm_id: None,
             window_width: 1160.0,
             system_telemetry: crate::system::SystemTelemetry::default(),
             previous_cpu_sample: None,
+            setup_step: 0,
+            setup_desktop_integration: cfg!(any(target_os = "linux", target_os = "windows")),
+            setup_busy: false,
             avatar_cache: HashMap::new(),
             launch_status_by_instance: HashMap::new(),
             launch_progress_by_instance: HashMap::new(),
@@ -268,7 +301,9 @@ impl SwiftLauncher {
                         accent: self.settings.accent,
                     };
                     self.store = SledStore::open().ok();
-                    self.state = if self.active_session.is_some() {
+                    self.state = if !self.settings.first_run_complete {
+                        AppState::Initialize
+                    } else if self.active_session.is_some() {
                         AppState::Home
                     } else {
                         AppState::Login
@@ -302,14 +337,12 @@ impl SwiftLauncher {
                         ),
                         Message::SystemTelemetryRefreshed,
                     );
-                    if avatar_tasks.is_empty() {
-                        Task::batch([version_task, telemetry_task])
-                    } else {
-                        let mut tasks = avatar_tasks;
-                        tasks.push(version_task);
-                        tasks.push(telemetry_task);
-                        Task::batch(tasks)
-                    }
+                    let presence_task = self.sync_idle_discord_presence();
+                    let mut tasks = avatar_tasks;
+                    tasks.push(version_task);
+                    tasks.push(telemetry_task);
+                    tasks.push(presence_task);
+                    Task::batch(tasks)
                 }
                 Err(error) => {
                     self.state = AppState::Login;
@@ -346,6 +379,61 @@ impl SwiftLauncher {
                 self.window_width = width.max(420.0);
                 Task::none()
             }
+            Message::WindowCloseRequested(id) => {
+                if self.settings.discord_presence {
+                    let _ = crate::discord::clear_activity_blocking();
+                }
+                self.discord_activity_signature = None;
+                iced::window::close(id)
+            }
+            Message::SetupDesktopIntegrationChanged(value) => {
+                self.setup_desktop_integration = value;
+                Task::none()
+            }
+            Message::SetupNext => {
+                self.setup_step = (self.setup_step + 1).min(4);
+                Task::none()
+            }
+            Message::SetupBack => {
+                self.setup_step = self.setup_step.saturating_sub(1);
+                Task::none()
+            }
+            Message::FinishSetup => {
+                if self.setup_busy {
+                    return Task::none();
+                }
+                self.setup_busy = true;
+                self.settings.first_run_complete = true;
+                let store = self.store.clone();
+                let settings = self.settings.clone();
+                let install_desktop_entry = self.setup_desktop_integration;
+                Task::perform(
+                    complete_setup(store, settings, install_desktop_entry),
+                    Message::SetupFinished,
+                )
+            }
+            Message::SetupFinished(result) => {
+                self.setup_busy = false;
+                match result {
+                    Ok(warning) => {
+                        self.settings.first_run_complete = true;
+                        self.state = if self.active_session.is_some() {
+                            AppState::Home
+                        } else {
+                            AppState::Login
+                        };
+                        if let Some(warning) = warning {
+                            self.error_banner = Some(warning);
+                        }
+                    }
+                    Err(error) => {
+                        self.settings.first_run_complete = false;
+                        self.error_banner = Some(error.to_string());
+                        return Task::none();
+                    }
+                }
+                self.sync_idle_discord_presence()
+            }
             Message::RefreshSystemTelemetry => {
                 let disk_path = self.settings.default_game_dir.clone();
                 let previous_cpu = self.previous_cpu_sample;
@@ -372,7 +460,7 @@ impl SwiftLauncher {
                 if self.launcher_page != LauncherPage::Instances {
                     self.clear_instance_panel_memory();
                 }
-                if matches!(page, LauncherPage::Discover)
+                let version_task = if matches!(page, LauncherPage::Discover)
                     && self.create_versions.len()
                         <= crate::instances::create::fallback_versions().len()
                 {
@@ -382,7 +470,8 @@ impl SwiftLauncher {
                     )
                 } else {
                     Task::none()
-                }
+                };
+                Task::batch([version_task, self.sync_idle_discord_presence()])
             }
             Message::SearchChanged(value) => {
                 self.search = value;
@@ -953,7 +1042,7 @@ impl SwiftLauncher {
                         }
                     }
                 }
-                Task::none()
+                self.sync_idle_discord_presence()
             }
             Message::LaunchFailed { instance_id, error } => {
                 self.active_launches
@@ -968,7 +1057,7 @@ impl SwiftLauncher {
                 self.launch_status_by_instance.remove(&instance_id);
                 self.launch_progress_by_instance.remove(&instance_id);
                 self.error_banner = Some(error.to_string());
-                Task::none()
+                self.sync_idle_discord_presence()
             }
             Message::LaunchLog(line) => {
                 self.push_launch_log(line);
@@ -1574,7 +1663,10 @@ impl SwiftLauncher {
                 match result {
                     Ok(session) => {
                         self.accept_session(session.clone());
-                        Self::cache_avatar_task(session)
+                        Task::batch([
+                            Self::cache_avatar_task(session),
+                            self.sync_idle_discord_presence(),
+                        ])
                     }
                     Err(error) => {
                         let message = error.to_string();
@@ -1621,7 +1713,7 @@ impl SwiftLauncher {
                     let _ = accounts::save_session(store, session);
                 }
                 self.account_menu_open = false;
-                Task::none()
+                self.sync_idle_discord_presence()
             }
             Message::SignOut(uuid) => {
                 let session_to_invalidate = self
@@ -1645,13 +1737,14 @@ impl SwiftLauncher {
                     self.active_session = None;
                     self.state = AppState::Login;
                 }
-                match session_to_invalidate {
+                let invalidate_task = match session_to_invalidate {
                     Some(session) => Task::perform(
                         async move { crate::auth::invalidate(&session).await },
                         |_| Message::Noop,
                     ),
                     None => Task::none(),
-                }
+                };
+                Task::batch([invalidate_task, self.sync_idle_discord_presence()])
             }
             Message::AddAccount => {
                 self.settings_open = false;
@@ -1664,7 +1757,7 @@ impl SwiftLauncher {
                 self.device_flow = None;
                 self.error_banner = None;
                 self.state = AppState::Login;
-                Task::none()
+                self.sync_idle_discord_presence()
             }
             Message::CancelAddAccount => {
                 self.adding_account = false;
@@ -1675,12 +1768,12 @@ impl SwiftLauncher {
                     self.state = AppState::Home;
                     self.launcher_page = LauncherPage::Settings;
                 }
-                Task::none()
+                self.sync_idle_discord_presence()
             }
             Message::SettingsOpened => {
                 self.launcher_page = LauncherPage::Settings;
                 self.settings_open = false;
-                Task::none()
+                self.sync_idle_discord_presence()
             }
             Message::SettingsClosed => {
                 self.settings_open = false;
@@ -1807,12 +1900,21 @@ impl SwiftLauncher {
             Message::DiscordPresenceChanged(value) => {
                 self.settings.discord_presence = value;
                 if value && crate::discord::configured_client_id().is_none() {
-                    self.error_banner = Some(
-                        "Discord Rich Presence enabled, but no Discord client id is bundled".into(),
-                    );
+                    self.error_banner = Some(DISCORD_CLIENT_ID_MISSING.into());
+                } else if !value && self.error_banner.as_deref() == Some(DISCORD_CLIENT_ID_MISSING)
+                {
+                    self.error_banner = None;
                 }
                 self.persist_settings();
-                Task::none()
+                if value {
+                    self.sync_idle_discord_presence()
+                } else {
+                    self.discord_activity_signature = None;
+                    Task::perform(
+                        async { crate::discord::clear_activity().await.ok() },
+                        |_| Message::Noop,
+                    )
+                }
             }
             Message::CrashReporterChanged(value) => {
                 self.settings.crash_reporter = value;
@@ -1857,6 +1959,14 @@ impl SwiftLauncher {
             AppState::Loading => {
                 crate::screens::loading::view(self.loading_progress, &self.loading_status)
             }
+            AppState::Initialize => crate::screens::initialize::view(
+                &self.settings,
+                self.setup_desktop_integration,
+                self.setup_busy,
+                self.error_banner.as_deref(),
+                self.window_width,
+                self.setup_step,
+            ),
             AppState::Login => crate::screens::login::view(
                 self.login_provider,
                 &self.username,
@@ -2000,6 +2110,7 @@ impl SwiftLauncher {
             time::every(Duration::from_millis(16)).map(Message::Tick),
             time::every(Duration::from_secs(2)).map(|_| Message::RefreshSystemTelemetry),
             iced::window::resize_events().map(|(_id, size)| Message::WindowResized(size.width)),
+            iced::window::close_requests().map(Message::WindowCloseRequested),
         ];
 
         if self.create_busy {
@@ -2026,10 +2137,7 @@ impl SwiftLauncher {
 
         for launch in &self.active_launches {
             subscriptions.push(launch_subscription(
-                launch.run_id,
-                launch.instance.clone(),
-                launch.session.clone(),
-                launch.stop_tx.subscribe(),
+                launch.clone(),
                 self.settings.crash_reporter,
                 self.settings.discord_presence,
             ));
@@ -2059,6 +2167,75 @@ impl SwiftLauncher {
         self.state = AppState::Home;
         self.adding_account = false;
         self.settings_open = false;
+    }
+
+    fn sync_idle_discord_presence(&mut self) -> Task<Message> {
+        let Some((details, state)) = self.idle_discord_activity() else {
+            return Task::none();
+        };
+        let signature = format!("{details}\n{state}");
+        if self.discord_activity_signature.as_deref() == Some(signature.as_str()) {
+            return Task::none();
+        }
+        self.discord_activity_signature = Some(signature);
+        Task::perform(
+            async move {
+                crate::discord::publish_activity(details.clone(), state)
+                    .await
+                    .map(|_| format!("Discord Rich Presence: {details}"))
+                    .unwrap_or_else(|error| format!("Discord Rich Presence skipped: {error}"))
+            },
+            Message::LaunchLog,
+        )
+    }
+
+    fn idle_discord_activity(&self) -> Option<(String, String)> {
+        if !self.settings.discord_presence
+            || crate::discord::configured_client_id().is_none()
+            || !self.active_launches.is_empty()
+        {
+            return None;
+        }
+        let details = match self.state {
+            AppState::Home => format!("Exploring {}", self.launcher_page.discord_label()),
+            AppState::Login => "Choosing an account".into(),
+            AppState::Initialize => "Setting up Swift Launcher".into(),
+            AppState::Loading => "Starting Swift Launcher".into(),
+        };
+        Some((details, "Ready to launch Minecraft".into()))
+    }
+
+    fn launch_discord_details(
+        &self,
+        instance: Option<&Instance>,
+        world_folder: &Option<String>,
+        server_address: &Option<String>,
+    ) -> String {
+        if let Some(folder) = world_folder {
+            let name = self
+                .worlds
+                .iter()
+                .find(|world| world.folder_name == *folder)
+                .map(|world| world.display_name.as_str())
+                .unwrap_or(folder.as_str());
+            return format!("Playing {name}");
+        }
+
+        if let Some(address) = server_address {
+            let name = self
+                .servers
+                .iter()
+                .find(|server| server.address.eq_ignore_ascii_case(address))
+                .map(|server| server.name.trim())
+                .filter(|name| !name.is_empty())
+                .unwrap_or(address.as_str());
+            return format!("Playing on server {name}");
+        }
+
+        let name = instance
+            .map(|instance| instance.name.as_str())
+            .unwrap_or("Minecraft");
+        format!("Playing {name}")
     }
 
     fn cache_avatar_task(session: Session) -> Task<Message> {
@@ -2213,6 +2390,12 @@ impl SwiftLauncher {
             .find(|instance| instance.id == id)
             .cloned();
         let session = self.active_session.clone();
+        let discord_details =
+            self.launch_discord_details(instance.as_ref(), &world_folder, &server_address);
+        let discord_state = instance
+            .as_ref()
+            .map(|instance| format!("Minecraft {}", instance.minecraft_version))
+            .unwrap_or_else(|| "Minecraft".into());
         if let Some(instance) = &mut instance {
             if let Some(world_folder) = world_folder {
                 instance.quick_play_world = world_folder;
@@ -2226,6 +2409,7 @@ impl SwiftLauncher {
         if let Some(target) = self.instances.iter_mut().find(|instance| instance.id == id) {
             target.run_state = InstanceRunState::Preparing;
         }
+        self.discord_activity_signature = None;
         self.launch_progress_by_instance.insert(id.clone(), 0.0);
         match (instance, session) {
             (Some(instance), Some(session)) => {
@@ -2242,6 +2426,8 @@ impl SwiftLauncher {
                     instance,
                     session,
                     stop_tx,
+                    discord_details,
+                    discord_state,
                 });
                 Task::none()
             }
@@ -2471,13 +2657,17 @@ fn modrinth_install_subscription(install: ActiveModrinthInstall) -> Subscription
 }
 
 fn launch_subscription(
-    id: u64,
-    instance: Instance,
-    session: Session,
-    mut stop_rx: tokio::sync::watch::Receiver<bool>,
+    launch: ActiveLaunch,
     crash_reporter: bool,
     discord_presence: bool,
 ) -> Subscription<Message> {
+    let id = launch.run_id;
+    let instance = launch.instance;
+    let session = launch.session;
+    let mut stop_rx = launch.stop_tx.subscribe();
+    let discord_details = launch.discord_details;
+    let discord_state = launch.discord_state;
+
     Subscription::run_with_id(
         ("launch-instance", id),
         stream::channel(200, move |mut output| async move {
@@ -2556,12 +2746,7 @@ fn launch_subscription(
                 })
                 .await;
             if discord_presence {
-                match crate::discord::publish_activity(
-                    report_instance.name.clone(),
-                    report_instance.minecraft_version.clone(),
-                )
-                .await
-                {
+                match crate::discord::publish_activity(discord_details, discord_state).await {
                     Ok(message) => {
                         let _ = output
                             .send(Message::LaunchOutput {
@@ -2788,4 +2973,119 @@ async fn startup() -> Result<StartupData, AppError> {
         instances,
         settings,
     })
+}
+
+async fn complete_setup(
+    store: Option<SledStore>,
+    settings: settings::LauncherSettings,
+    install_shortcut: bool,
+) -> Result<Option<String>, AppError> {
+    let desktop_warning = if install_shortcut {
+        write_platform_shortcut()
+            .await
+            .err()
+            .map(|error| format!("Desktop integration failed: {error}"))
+    } else {
+        None
+    };
+
+    let store = match store {
+        Some(store) => store,
+        None => SledStore::open()?,
+    };
+    tokio::task::spawn_blocking(move || settings::save(&store, &settings))
+        .await
+        .map_err(|error| AppError::Storage(error.to_string()))??;
+    Ok(desktop_warning)
+}
+
+#[cfg(target_os = "linux")]
+async fn write_platform_shortcut() -> Result<(), AppError> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| AppError::Storage("could not resolve HOME for desktop entry".into()))?;
+    let applications = home.join(".local").join("share").join("applications");
+    let icons = home
+        .join(".local")
+        .join("share")
+        .join("icons")
+        .join("hicolor")
+        .join("scalable")
+        .join("apps");
+    tokio::fs::create_dir_all(&applications).await?;
+    tokio::fs::create_dir_all(&icons).await?;
+
+    let icon_path = icons.join("swift-launcher.svg");
+    tokio::fs::write(icon_path, crate::icons::LOGO).await?;
+
+    let exe = std::env::current_exe().map_err(|error| AppError::Storage(error.to_string()))?;
+    let exec = desktop_quoted_path(&exe);
+    let entry = format!(
+        "[Desktop Entry]\nType=Application\nName=Swift Launcher\nComment=A blazingly fast and lightweight Minecraft launcher.\nExec={exec}\nIcon=swift-launcher\nTerminal=false\nCategories=Game;\nStartupNotify=true\n"
+    );
+    tokio::fs::write(applications.join("swift-launcher.desktop"), entry).await?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+async fn write_platform_shortcut() -> Result<(), AppError> {
+    let exe = std::env::current_exe().map_err(|error| AppError::Storage(error.to_string()))?;
+    let working_dir = exe.parent().unwrap_or_else(|| std::path::Path::new(""));
+    let target = powershell_single_quote(&exe.display().to_string());
+    let working = powershell_single_quote(&working_dir.display().to_string());
+    let icon = powershell_single_quote(&format!("{},0", exe.display()));
+    let script = format!(
+        "$desktop=[Environment]::GetFolderPath('Desktop');\
+         $path=Join-Path $desktop 'Swift Launcher.lnk';\
+         $shell=New-Object -ComObject WScript.Shell;\
+         $shortcut=$shell.CreateShortcut($path);\
+         $shortcut.TargetPath={target};\
+         $shortcut.WorkingDirectory={working};\
+         $shortcut.IconLocation={icon};\
+         $shortcut.Description='Native Minecraft launcher';\
+         $shortcut.Save();"
+    );
+    let output = tokio::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .output()
+        .await
+        .map_err(|error| AppError::Storage(error.to_string()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let reason = if stderr.is_empty() { stdout } else { stderr };
+        return Err(AppError::Storage(format!(
+            "PowerShell shortcut creation failed: {reason}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+async fn write_platform_shortcut() -> Result<(), AppError> {
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn desktop_quoted_path(path: &std::path::Path) -> String {
+    let mut out = String::from("\"");
+    for ch in path.to_string_lossy().chars() {
+        if matches!(ch, '\\' | '"') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push('"');
+    out
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
